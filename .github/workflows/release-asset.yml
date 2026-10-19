@@ -45,6 +45,8 @@ jobs:
         run: |
           # 必须 cd 进去：`npm pack --prefix` 会打成仓库根目录那个 package（duckbi-dsh），
           # 而不是插件包（@duckbi/dsh-plugin-duckbi）。
+          # 另外 --pack-destination 不会自建目录，先 mkdir。
+          mkdir -p "$GITHUB_WORKSPACE/dist"
           cd packages/dsh-plugin-duckbi
           npm pack --pack-destination "$GITHUB_WORKSPACE/dist"
           cd "$GITHUB_WORKSPACE"

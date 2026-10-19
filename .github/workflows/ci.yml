@@ -12,25 +12,67 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PKG_DIR: packages/dsh-plugin-duckbi
+
 jobs:
-  test:
-    name: tests / node ${{ matrix.node }}
+  # 旧运行时能不能「加载」插件 —— 这一格守的是 .zst 的懒加载。
+  # Node 20 没有 createZstdDecompress，若哪天改回静态导入，整个插件 import 就会抛。
+  load-on-old-node:
+    name: loads on node 20
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # 20 用来守住 `.zst` 的懒加载（Node 20 没有 createZstdDecompress，
-        # 静态导入会让整个插件加载失败）；22 贴近 Electron 实际运行版本。
-        node: ['20', '22']
     defaults:
       run:
         working-directory: packages/dsh-plugin-duckbi
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: packages/dsh-plugin-duckbi/package-lock.json
+
+      # 只装运行期依赖：harness 的 devDeps 可能用到更新的 Node 语法，这里不需要它们
+      - name: Install runtime dependencies only
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - name: Import the plugin and mount it on a bare context
+        shell: pwsh
+        run: |
+          @'
+          const { apply } = await import('./lib/index.js')
+          if (typeof apply !== 'function') { console.error('apply is not a function'); process.exit(1) }
+          const defs = new Map()
+          const ctx = {
+            tools: { register: (d) => { defs.set(d.name, d); return () => {} } },
+            on: () => {}, get: () => undefined, effect: () => {}, logger: () => {},
+          }
+          apply(ctx, { dataDir: './wh-load', warmup: 'lazy', sources: [] })
+          const expected = ['duckbi_source', 'duckbi_schema', 'duckbi_query', 'duckbi_chart', 'duckbi_export']
+          for (const name of expected) {
+            if (!defs.has(name)) { console.error('missing tool: ' + name); process.exit(1) }
+          }
+          const value = await defs.get('duckbi_query').execute(
+            { sql: "SELECT 40 + 2 AS answer, version() AS duckdb" },
+            { signal: new AbortController().signal },
+          )
+          console.log('node ' + process.version + ' — 5 tools, DuckDB ' + value.rows[0][1])
+          '@ | Set-Content -Encoding utf8 load-check.mjs
+          node load-check.mjs
+
+  # 完整测试：devDependencies 里装了 @deepseek-ai/cordis + dsh-tools，
+  # 所以不依赖 runner 上预装的 Harness。
+  test:
+    name: full suite / node 22
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: packages/dsh-plugin-duckbi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
           cache: npm
           cache-dependency-path: packages/dsh-plugin-duckbi/package-lock.json
 
@@ -57,7 +99,10 @@ jobs:
 
       - name: Pack
         working-directory: packages/dsh-plugin-duckbi
-        run: npm pack --pack-destination "${{ github.workspace }}/dist"
+        # --pack-destination 不会自建目录，目标不存在会直接 ENOENT
+        run: |
+          New-Item -ItemType Directory -Force "${{ github.workspace }}\dist" | Out-Null
+          npm pack --pack-destination "${{ github.workspace }}\dist"
 
       - name: Install the tarball in a clean project and run a real query
         shell: pwsh

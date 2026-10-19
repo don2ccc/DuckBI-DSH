@@ -379,6 +379,12 @@ node test/chart.smoke.mjs    # 图表 15 例
 node test/export.smoke.mjs   # Excel/PDF 87 项断言
 ```
 
+测试要跑真实的 `@deepseek-ai/cordis` 与工具运行时，它们作为 **devDependencies** 装在本地，
+所以**不需要机器上预先装 Harness**（CI 就是这么跑的）。想改成测某个已安装的 profile，设
+`DSH_HOME=<你的 Harness home>` 即可——解析顺序是「本地 `node_modules` → profile」。
+
+> 插件**运行时**不 import 任何 `@deepseek-ai/*`，只用 `ctx.tools`；那些包只在测试里出现。
+
 设计取舍、失败案例与限制见 [docs/architecture.zh.md](docs/architecture.zh.md)。
 
 ## 许可

@@ -25,6 +25,10 @@
   "scripts": {
     "install-plugin": "node install.mjs"
   },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7"
+  },
   "dependencies": {
     "@duckdb/node-api": "^1.5.6-r.1",
     "@napi-rs/canvas": "^1.0.11",

@@ -14,6 +14,7 @@
 import ExcelJS from 'exceljs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -82,16 +83,33 @@ function assertEqual(actual, expected, message) {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the harness packages from the DSH profile, or explain why we cannot.
- * @returns {{cordisUrl: string, toolsUrl: string} | null} module URLs.
+ * Resolve the harness packages, preferring the local `node_modules`.
+ *
+ * CI 上没有本机装的 Harness，所以这两个包作为 devDependencies 装在本地；
+ * 本机开发时若没装 devDeps，再回落到 DSH profile。
+ * @returns {{cordisUrl: string, toolsUrl: string, source: string} | null} module URLs.
  */
 function resolveHarnessModules() {
+  try {
+    const requireFromHere = createRequire(import.meta.url)
+    return {
+      cordisUrl: pathToFileURL(requireFromHere.resolve('@deepseek-ai/cordis')).href,
+      toolsUrl: pathToFileURL(requireFromHere.resolve('@deepseek-ai/dsh-tools')).href,
+      source: 'node_modules',
+    }
+  } catch {
+    // 本地没装 devDeps，下面按 profile 找
+  }
   const home = process.env.DSH_HOME?.trim() || path.join(homedir(), '.dsh')
   const base = path.join(home, 'profiles', 'node_modules', '@deepseek-ai')
   const cordisEntry = path.join(base, 'cordis', 'lib', 'index.js')
   const toolsEntry = path.join(base, 'dsh-tools', 'lib', 'index.js')
   if (!existsSync(cordisEntry) || !existsSync(toolsEntry)) return null
-  return { cordisUrl: pathToFileURL(cordisEntry).href, toolsUrl: pathToFileURL(toolsEntry).href }
+  return {
+    cordisUrl: pathToFileURL(cordisEntry).href,
+    toolsUrl: pathToFileURL(toolsEntry).href,
+    source: `profile:${home}`,
+  }
 }
 
 /**
