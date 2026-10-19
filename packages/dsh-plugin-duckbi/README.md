@@ -15,26 +15,39 @@ Harness 负责理解你要什么。
 
 ## 安装
 
+仓库：<https://github.com/don2ccc/DuckBI-DSH>
+
 ### 前提
 
 - 一个能跑插件的 DeepSeek Harness（桌面版或 `dsh` CLI 均可），且 profile 已存在（启动过一次即可）。
-- Node.js ≥ 20。插件不 import 任何 `@deepseek-ai/*` 内部模块，**只依赖 `ctx.tools` 服务**，所以不挑 Harness 小版本。
+- Node.js ≥ 20（只用于安装与跑脚本；插件运行时用 Harness 自带的 Node）。
+- 插件不 import 任何 `@deepseek-ai/*` 内部模块，**只依赖 `ctx.tools` 服务**，所以不挑 Harness 小版本。
 - 首次读取 `.xlsx` 时会自动安装 DuckDB 的 `excel` 扩展，需要**一次性联网**（之后离线可用，扩展存在数据目录里）。
 
-### 方式 A：npm 包 / tarball（推荐）
+### 方式 A：从 GitHub 克隆（推荐）
 
 ```bash
-# 1) 装进某个 profile（pnpm 由 dsh 代管，依赖自动装好）
-dsh plugin --profile desktop add ./dsh-plugin-duckbi-0.1.0.tgz
-
-# 2) 写配置（包已就位，所以 --no-link 跳过软链）
-node <上面打印的安装路径>/install.mjs --no-link
-# 或者用 bin：npx duckbi-install --no-link
+git clone https://github.com/don2ccc/DuckBI-DSH.git
+cd DuckBI-DSH/packages/dsh-plugin-duckbi
+npm install            # 按当前平台拉原生二进制
+node install.mjs       # 软链到 profile + 写配置
 ```
 
-### 方式 B：直接给文件夹（离线可用）
+没有 git 就下载 ZIP（Code → Download ZIP），解压后从 `cd` 那步继续。
 
-把 `dsh-plugin-duckbi/` 整个目录拷过去（**不含** `node_modules` 也可以，见下）：
+### 方式 B：`.tgz` 包（同事发的，或自己 `npm pack` 打的）
+
+```bash
+# 1) 装进某个 profile（依赖随之安装）
+dsh plugin --profile desktop add ./duckbi-dsh-plugin-duckbi-0.1.0.tgz
+
+# 2) 写配置（包已就位，用 --no-link 跳过软链）
+node <profile>/node_modules/@duckbi/dsh-plugin-duckbi/install.mjs --no-link
+```
+
+### 方式 C：直接拷文件夹（离线 / 内网）
+
+把 `packages/dsh-plugin-duckbi/` 整个目录拷过去（**不含** `node_modules`）：
 
 ```bash
 cd dsh-plugin-duckbi
@@ -44,13 +57,6 @@ node install.mjs       # 软链到 profile + 写配置
 
 > **不要跨平台拷贝 `node_modules`**：`@duckdb/node-bindings-*` 和 `@napi-rs/canvas-*` 是平台专属的
 > 原生包（win32-x64 约 74 MB）。让 npm 在目标机器上自己装，才会拿到正确的二进制。
-
-### 方式 C：git
-
-```bash
-git clone <repo> && cd <repo>/packages/dsh-plugin-duckbi
-npm install && node install.mjs
-```
 
 ### 安装参数
 

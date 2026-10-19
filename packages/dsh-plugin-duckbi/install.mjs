@@ -173,6 +173,40 @@ async function installPackage(profilesNodeModules, options) {
   return { path: target, method: type === 'junction' ? 'junction' : 'symlink' }
 }
 
+/**
+ * 把一个新 profile 的补丁层和新块拼在一起。
+ *
+ * 关键点：空白 profile 的 `cordis.patch.yml` 常常是 `[]`（"空层"的标准写法）。
+ * 在 `[]` 后面再追加 `- insert:` 会得到**非法 YAML**（一个文档不能既空又非空），
+ * 所以这种情况下必须把 `[]` 替换掉，而不是追加。
+ * @param {string} base - 已摘除 DuckBI 块后的现有内容。
+ * @param {string} block - 要写入的 DuckBI 块。
+ * @returns {string} 完整的文件内容。
+ */
+function composePatchText(base, block) {
+  const lines = base.split('\n')
+  // 只看"有效内容"：去掉注释与空行后还剩下什么。
+  const meaningful = lines
+    .map((line) => line.replace(/#.*$/, '').trim())
+    .filter(Boolean)
+    .join('')
+  if (meaningful === '') {
+    // 空文件 / 只有注释：保留注释，直接加块。
+    const kept = base.replace(/\s*$/, '')
+    return `${kept}${kept === '' ? '' : '\n'}${block}`
+  }
+  if (meaningful === '[]') {
+    // 只有 `[]`：删掉这一行（和它的注释行？保留注释），再加块。
+    const kept = lines
+      .filter((line) => line.replace(/#.*$/, '').trim() !== '[]')
+      .join('\n')
+      .replace(/\s*$/, '')
+    return `${kept}${kept === '' ? '' : '\n'}${block}`
+  }
+  const kept = base.replace(/\s*$/, '')
+  return `${kept}\n${block}`
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -247,9 +281,7 @@ async function main() {
 
   const current = await readFile(patchFile, 'utf8').catch(() => '')
   const stripped = stripPatchBlock(current)
-  const base = stripped.text.replace(/\s*$/, '')
-  const next = `${base}${base === '' ? '' : '\n'}${buildPatchBlock({ dataDir, warmup, sources })}`
-  await writeFile(patchFile, next, 'utf8')
+  await writeFile(patchFile, composePatchText(stripped.text, buildPatchBlock({ dataDir, warmup, sources })), 'utf8')
   console.log(`  配置         : 已写入 ${patchFile}`)
 
   await mkdir(dataDir, { recursive: true })

@@ -23,6 +23,32 @@
 
 ---
 
+## 三步装好（约 2 分钟）
+
+前提：装了 DeepSeek Harness（桌面版或 `dsh` CLI），且**至少启动过一次**（这样 profile 已存在）。
+
+```powershell
+git clone https://github.com/don2ccc/DuckBI-DSH.git
+cd DuckBI-DSH\packages\dsh-plugin-duckbi
+npm install
+node install.mjs
+```
+
+装完确认一眼：
+
+```powershell
+Get-Content "$env:USERPROFILE\.dsh\duckbi\plugin-loaded.json"
+```
+
+看到 `"ok": true` 就装好了 → **重启一次 Harness**（首次加载需要）→ 在对话里说：
+
+> 把 `D:\数据\销售` 加进来，看看有哪些数据
+
+> 没装 git？用「Code → Download ZIP」解压后从 `cd` 那步继续。
+> 换 profile、离线、手动安装、排错见下面的 [安装详解](#安装详解)。
+
+---
+
 ## 它能做什么
 
 ### ① 指个目录，就变成数据库
@@ -103,25 +129,180 @@ Harness 支持任意 OpenAI 兼容端点。把它指向你局域网里的推理�
 
 ---
 
-## 快速开始
+## 安装详解
 
-```bash
-# 1) 装进 Harness 的 profile（依赖自动安装）
-dsh plugin --profile desktop add ./duckbi-dsh-plugin-duckbi-0.1.0.tgz
+安装 = **把包放进 profile 能解析的位置** + **在 profile 的补丁文件里加一条 insert**。
+仓库自带 `install.mjs` 把这两步做完，也可以手动做（见下文，脚本只做这两件事，不碰别的）。
 
-# 2) 写配置
-node <profile>/node_modules/@duckbi/dsh-plugin-duckbi/install.mjs --no-link
+### 0. 前置条件
 
-# 3) 验证：出现 "ok": true 就是已经在跑
-cat ~/.dsh/duckbi/plugin-loaded.json
+| 要求 | 怎么确认 | 说明 |
+| --- | --- | --- |
+| DeepSeek Harness | 桌面版能打开，或 `dsh --version` 有输出 | 桌面版与 CLI 都可以 |
+| Node.js 20+ | `node -v` | **只用于安装与跑脚本**；插件运行时用的是 Harness 自带的 Node |
+| 至少一个 profile | `dir %USERPROFILE%\.dsh\profiles`（macOS/Linux：`ls ~/.dsh/profiles`） | 没看到 `desktop` 就先启动一次桌面版，或改用 `--profile web` |
+
+> `DSH_HOME` 默认是 `%USERPROFILE%\.dsh`（macOS/Linux 是 `~/.dsh`）。装在别处的话所有命令加 `--home <你的路径>`。
+
+### 方式 A：git clone（推荐）
+
+```powershell
+git clone https://github.com/don2ccc/DuckBI-DSH.git
+cd DuckBI-DSH\packages\dsh-plugin-duckbi
+npm install            # 按你的平台拉原生二进制（约 130 MB，首次约 10 秒）
+node install.mjs       # 默认装到 desktop profile
 ```
 
-然后随便说一句：
+要装到别的 profile、或顺便预登记数据目录：
 
-> 把 `D:\数据\销售` 加进来，看看有哪些数据
+```powershell
+node install.mjs --profile web
+node install.mjs --sources D:\日志,D:\台账 --warmup eager
+```
 
-完整的安装方式（离线 / git / 自定义 profile）、配置项与卸载见
-[插件 README](packages/dsh-plugin-duckbi/README.md)。
+### 方式 B：下载 ZIP（没有 git）
+
+1. 仓库页 → **Code → Download ZIP** → 解压，例如 `D:\DuckBI-DSH-main`
+2. 然后同方式 A：
+
+```powershell
+cd D:\DuckBI-DSH-main\packages\dsh-plugin-duckbi
+npm install
+node install.mjs
+```
+
+### 方式 C：已有 `.tgz` 包（同事发你，或你自己打的）
+
+```powershell
+# 用 dsh 的插件管理器装进 profile（依赖随之安装）
+dsh plugin --profile desktop add .\duckbi-dsh-plugin-duckbi-0.1.0.tgz
+
+# 再写配置（包已在 node_modules 里，用 --no-link 跳过软链）
+node "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@duckbi\dsh-plugin-duckbi\install.mjs" --no-link
+```
+
+自己打包给同事：
+
+```powershell
+cd packages\dsh-plugin-duckbi
+npm pack          # -> duckbi-dsh-plugin-duckbi-0.1.0.tgz（约 78 KB，不含 node_modules）
+```
+
+> **不要把 `node_modules` 拷给别人。** `@duckdb/node-api` 和 `@napi-rs/canvas` 带平台原生二进制，
+> Windows 的 `.node` 文件在 macOS/Linux 上会直接加载失败。让对方自己 `npm install`。
+
+### 安装器到底做了什么（可以逐条核对）
+
+1. 把包链接到 `<home>/profiles/node_modules/@duckbi/dsh-plugin-duckbi`
+   （Windows 用 junction，macOS/Linux 用 symlink）——**不复制 `node_modules`**；
+2. 往 `<home>/profiles/<profile>/cordis.patch.yml` 追一段带标记的配置：
+
+   ```yaml
+   # >>> DuckBI (managed by install.mjs) >>>
+   - insert:
+       - id: duckbi
+         name: '@duckbi/dsh-plugin-duckbi'
+         config:
+           dataDir: 'C:\Users\me\.dsh\duckbi'
+           warmup: lazy
+           sources: []
+   # <<< DuckBI (managed by install.mjs) <<<
+   ```
+
+   **你原有的配置一行都不动**；重复安装会原地替换这一段（不会写出两份）；
+   如果 profile 还是空层 `[]`，安装器会把 `[]` 换掉而不是傻追加（否则 YAML 非法）。
+3. 创建数据目录 `<home>/duckbi`（DuckDB 文件、导出文件、临时转码副本都在这）。
+
+除此之外不改任何东西，不需要管理员权限。
+
+### 手动安装（不想跑脚本）
+
+```powershell
+# 1) 建目录并链接（Windows；macOS/Linux 用 ln -s）
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.dsh\profiles\node_modules\@duckbi"
+New-Item -ItemType Junction `
+  -Path "$env:USERPROFILE\.dsh\profiles\node_modules\@duckbi\dsh-plugin-duckbi" `
+  -Target "D:\DuckBI-DSH\packages\dsh-plugin-duckbi"
+```
+
+```bash
+# macOS / Linux
+mkdir -p ~/.dsh/profiles/node_modules/@duckbi
+ln -s /path/to/DuckBI-DSH/packages/dsh-plugin-duckbi ~/.dsh/profiles/node_modules/@duckbi/dsh-plugin-duckbi
+```
+
+然后在 `~/.dsh/profiles/desktop/cordis.patch.yml` **末尾**追加（若文件只有 `[]`，请把 `[]` 删掉）：
+
+```yaml
+- insert:
+    - id: duckbi
+      name: '@duckbi/dsh-plugin-duckbi'
+      config:
+        dataDir: 'C:\Users\me\.dsh\duckbi'   # 必须单引号，双引号会把 \U 当转义
+        warmup: lazy
+        sources: []
+```
+
+最后 `mkdir` 一下 `dataDir` 再启动 Harness。
+
+### 验证装好了
+
+```powershell
+Get-Content "$env:USERPROFILE\.dsh\duckbi\plugin-loaded.json"
+# macOS/Linux: cat ~/.dsh/duckbi/plugin-loaded.json
+```
+
+```json
+{
+  "plugin": "@duckbi/dsh-plugin-duckbi",
+  "version": "0.1.0",
+  "pid": 41008,
+  "electron": "44.0.0",
+  "duckdb": "v1.5.6",
+  "ok": true
+}
+```
+
+- **文件存在且 `ok: true`** → 插件已在你**正在运行的** Harness 进程里加载，并且成功跑过一次 DuckDB 查询。
+- **文件不存在** → 插件没被加载，看下面的排错表。
+
+### 排错
+
+| 现象 | 原因 / 处理 |
+| --- | --- |
+| 对话里看不到 `duckbi_*` 工具 | **改过源码必须重启 Harness**（只改 `cordis.patch.yml` 会热加载，改代码不会）。先确认 `plugin-loaded.json` 存在 |
+| `找不到 profile "desktop"` | 桌面版没启动过。启动一次，或用 `--profile web` 换成本机已有的 profile 名 |
+| `npm install` 卡住 / 失败 | 原生包 `@duckdb/node-bindings-*`、`@napi-rs/canvas-*` 需要能下载；换网络或镜像后重试 |
+| 第一次读 `.xlsx` 报 excel 扩展错误 | 需要**联网一次**自动安装 DuckDB `excel` 扩展；内网机器把 `~/.dsh/duckbi/extensions` 整个目录拷过去即可离线 |
+| `another process is using it` | DuckDB 单写者：同一个数据目录同时只能有一个 Harness 在写 |
+| 中文全是乱码 | GB18030 会自动转码；若仍乱码，确认不是 UTF-16 或已被其他工具二次编码 |
+| 配置改了不生效 | `cordis.patch.yml` 被监听，通常几秒内热加载；不行就重启 |
+| Windows 路径报 YAML 解析错 | 路径必须用**单引号**；双引号里 `\U`、`\.` 会被当转义 |
+
+### 升级 / 卸载 / 多 profile
+
+```powershell
+# 升级（软链到仓库，所以代码是跟着 git 走的）
+cd DuckBI-DSH; git pull
+cd packages\dsh-plugin-duckbi; npm install; node install.mjs   # 幂等，原地替换配置块
+# 然后重启 Harness
+
+# 卸载
+node install.mjs --remove        # 移除配置块与链接，保留 ~/.dsh/duckbi 数据
+
+# 多 profile：每个 profile 各跑一次
+node install.mjs --profile web
+node install.mjs --profile headless
+```
+
+### 平台与配置
+
+- **Windows x64 / macOS（Intel 与 Apple Silicon）/ Linux x64** 都有预编译原生包；其他架构需自行编译。
+- 仓库里的 `install.mjs` 是**不带依赖**的纯 JS（只用 Node 内置模块），所以链接这一步不需要先 `npm install`；
+  但插件运行时需要依赖，所以别跳过 `npm install`。
+
+配置项（`dataDir` / `warmup` / `sources` / `maxRows` / `allowedRoots` / `allowWriteSql` …）与
+完整说明见 [插件 README](packages/dsh-plugin-duckbi/README.md)。
 
 ---
 
