@@ -171,21 +171,28 @@ npm install
 node install.mjs
 ```
 
-### 方式 C：已有 `.tgz` 包（同事发你，或你自己打的）
+### 方式 C：一行命令装发布包（最快）
 
 ```powershell
-# 用 dsh 的插件管理器装进 profile（依赖随之安装）
-dsh plugin --profile desktop add .\duckbi-dsh-plugin-duckbi-0.1.0.tgz
+# 1) 直接把 GitHub Release 的包装进 profile（依赖随之安装；pnpm 会解析这个 tarball URL）
+dsh plugin --profile desktop add https://github.com/don2ccc/DuckBI-DSH/releases/download/v0.1.0/duckbi-dsh-plugin-duckbi-0.1.0.tgz
 
-# 再写配置（包已在 node_modules 里，用 --no-link 跳过软链）
+# 2) 再写配置（包已在 node_modules 里，用 --no-link 跳过软链）
 node "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@duckbi\dsh-plugin-duckbi\install.mjs" --no-link
+```
+
+也可以先用浏览器下载 [Releases 里的 `.tgz`](https://github.com/don2ccc/DuckBI-DSH/releases/tag/v0.1.0)，
+或者拿同事发你的包，把第一步换成本地路径：
+
+```powershell
+dsh plugin --profile desktop add .\duckbi-dsh-plugin-duckbi-0.1.0.tgz
 ```
 
 自己打包给同事：
 
 ```powershell
 cd packages\dsh-plugin-duckbi
-npm pack          # -> duckbi-dsh-plugin-duckbi-0.1.0.tgz（约 78 KB，不含 node_modules）
+npm pack          # -> duckbi-dsh-plugin-duckbi-0.1.0.tgz（约 80 KB，不含 node_modules）
 ```
 
 > **不要把 `node_modules` 拷给别人。** `@duckdb/node-api` 和 `@napi-rs/canvas` 带平台原生二进制，
