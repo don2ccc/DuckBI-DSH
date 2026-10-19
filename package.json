@@ -1,0 +1,15 @@
+{
+  "name": "duckbi-dsh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DuckBI - a DeepSeek Harness plugin that turns folders of .log / Excel files into a chattable DuckDB data warehouse with in-chat tables, charts and Excel/PDF export.",
+  "type": "module",
+  "scripts": {
+    "test": "node packages/dsh-plugin-duckbi/test/run-tests.mjs",
+    "test:chart": "node packages/dsh-plugin-duckbi/test/chart.smoke.mjs",
+    "test:export": "node packages/dsh-plugin-duckbi/test/export.smoke.mjs",
+    "demo": "node scripts/demo.mjs",
+    "install-plugin": "node scripts/install.mjs",
+    "uninstall-plugin": "node scripts/install.mjs --remove"
+  }
+}

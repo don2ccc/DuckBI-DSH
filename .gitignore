@@ -1,0 +1,21 @@
+# Runtime / generated
+node_modules/
+.demo/
+.probe-duckdb/
+packages/dsh-plugin-duckbi/test/out/
+
+# DuckBI warehouse (created under the Harness home by default, but never commit one)
+*.duckdb
+*.duckdb.wal
+plugin-loaded.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+
+# 可分发包（npm pack 产物，可随时重新生成）
+dist/
+
+# 由 scripts/demo.mjs 与 scripts/report.mjs 生成，可随时重跑
+samples/

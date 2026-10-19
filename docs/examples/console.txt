@@ -1,0 +1,134 @@
+
+### Register the sales folder  [duckbi_source]
+**Scanned `sales`** — 0 ingested · 2 unchanged · 0 removed · 6 ms
+
+2 tables · 1,471 rows in `src_sales`
+
+### Register the log folder  [duckbi_source]
+**Scanned `logs`** — 0 ingested · 1 unchanged · 0 removed · 5 ms
+
+1 tables · 1,494 rows in `src_logs`
+
+### Catalog overview  [duckbi_schema]
+| table | rows |
+| :--- | ---: |
+| `src_logs.app` | 1,494 |
+| `src_sales.orders` | 1,466 |
+| `src_sales.targets` | 5 |
+
+3 tables · 2,965 rows total. Use `duckbi_schema` with a table name for columns and samples, then `duckbi_query` for the actual data.
+
+### Orders columns  [duckbi_schema]
+**`src_sales.orders`** — 1,466 rows, 6 columns
+
+| column | type | nulls | distinct | sample |
+| :--- | :--- | ---: | ---: | :--- |
+| `order_id` | BIGINT | 0 (0%) | 1,466 | 1 · 2 · 3 |
+| `month` | VARCHAR | 0 (0%) | 12 | 2024-01 |
+| `region` | VARCHAR | 0 (0%) | 5 | 华东 |
+| `channel` | VARCHAR | 0 (0%) | 3 | 直营 |
+| `amount` | DOUBLE | 0 (0%) | 1,463 | 3626.86 · 4605.98 · 4555.17 |
+| `quantity` | BIGINT | 0 (0%) | 8 | 8 · 7 · 5 |
+
+### Revenue by region  [duckbi_query]
+**5 rows** · 2 ms
+
+| region | orders | revenue | avg_order | share_pct |
+| :--- | ---: | ---: | ---: | ---: |
+| 西南 | 295 | 799,501.24 | 2,710.17 | 20.47 |
+| 华北 | 301 | 787,681.68 | 2,616.88 | 20.17 |
+| 华东 | 286 | 784,869.79 | 2,744.3 | 20.1 |
+| 华南 | 289 | 775,190.96 | 2,682.32 | 19.85 |
+| 海外 | 295 | 757,860.03 | 2,569.02 | 19.41 |
+
+### Monthly trend with a windowed running total  [duckbi_query]
+**12 rows** · 2 ms
+
+| month | revenue | running_total |
+| :--- | ---: | ---: |
+| 2024-01 | 425,056.26 | 425,056.26 |
+| 2024-02 | 451,148.87 | 876,205.13 |
+| 2024-03 | 425,098.78 | 1,301,303.91 |
+| 2024-04 | 376,689.11 | 1,677,993.02 |
+| 2024-05 | 339,806.95 | 2,017,799.97 |
+| 2024-06 | 268,380.06 | 2,286,180.03 |
+| 2024-07 | 232,305.87 | 2,518,485.9 |
+| 2024-08 | 214,270.74 | 2,732,756.64 |
+| 2024-09 | 229,936.08 | 2,962,692.72 |
+| 2024-10 | 273,549.16 | 3,236,241.88 |
+| 2024-11 | 290,268.33 | 3,526,510.21 |
+| 2024-12 | 378,593.49 | 3,905,103.7 |
+
+### Log severity mix  [duckbi_query]
+**4 rows** · 2 ms
+
+| level | lines |
+| :--- | ---: |
+| INFO | 957 |
+| DEBUG | 225 |
+| WARN | 221 |
+| ERROR | 91 |
+
+### Busiest log hours  [duckbi_query]
+**11 rows** · 1 ms
+
+| hour | lines |
+| ---: | ---: |
+| 8 | 9 |
+| 9 | 6 |
+| 10 | 5 |
+| 11 | 8 |
+| 12 | 9 |
+| 13 | 6 |
+| 14 | 9 |
+| 15 | 9 |
+| 16 | 7 |
+| 17 | 9 |
+| 18 | 14 |
+
+### Chart: revenue by region  [duckbi_chart]
+**bar chart** — 1 series × 5 categories · 2 ms
+
+Saved to `.demo\warehouse\exports\20261019-092932-区域销售额排名.png` (58 KB).
+
+_This harness has no image attachment service, so the chart was not embedded above; the PNG file is on disk._
+
+### Chart: monthly trend  [duckbi_chart]
+**line chart** — 1 series × 12 categories · 5 ms
+
+Saved to `.demo\warehouse\exports\20261019-092932-Month-over-month_revenue.png` (77 KB).
+
+_This harness has no image attachment service, so the chart was not embedded above; the PNG file is on disk._
+
+### Chart: log level share  [duckbi_chart]
+**pie chart** — 1 series × 4 categories · 3 ms
+
+Saved to `.demo\warehouse\exports\20261019-092933-日志级别分布.png` (75 KB).
+
+_This harness has no image attachment service, so the chart was not embedded above; the PNG file is on disk._
+
+### Export workbook  [duckbi_export]
+**Exported XLSX** — 15 rows · 8.8 KB
+
+`samples\sales-report.xlsx`
+
+The file is ready; call `present` with this path to show a download card in the conversation.
+
+### Export PDF report  [duckbi_export]
+**Exported PDF** — 15 rows · 32 KB
+
+`samples\sales-report.pdf`
+
+The file is ready; call `present` with this path to show a download card in the conversation.
+
+### Export CSV  [duckbi_export]
+**Exported CSV** — 12 rows · 284 B
+
+`samples\monthly-summary.csv`
+
+The file is ready; call `present` with this path to show a download card in the conversation.
+
+### Scan summary  [duckbi_source]
+**Scanned `sales`** — 0 ingested · 2 unchanged · 0 removed · 6 ms
+
+2 tables · 1,471 rows in `src_sales`
