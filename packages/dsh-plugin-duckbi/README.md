@@ -1,5 +1,7 @@
 # DuckBI · 让 DeepSeek Harness 会算数
 
+**中文** | [English](README.en.md)
+
 把磁盘上的 **日志目录** 和 **Excel 台账** 变成可对话查询的数据仓库：DuckDB 负责存储与计算，
 Harness 负责理解你要什么。
 
