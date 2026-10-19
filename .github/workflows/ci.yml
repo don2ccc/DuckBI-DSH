@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支有新提交时，取消还在跑的旧任务
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests / node ${{ matrix.node }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 用来守住 `.zst` 的懒加载（Node 20 没有 createZstdDecompress，
+        # 静态导入会让整个插件加载失败）；22 贴近 Electron 实际运行版本。
+        node: ['20', '22']
+    defaults:
+      run:
+        working-directory: packages/dsh-plugin-duckbi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: packages/dsh-plugin-duckbi/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: End-to-end tests (real cordis + real DuckDB)
+        run: node test/run-tests.mjs
+
+      - name: Chart smoke tests
+        run: node test/chart.smoke.mjs
+
+      - name: Export smoke tests (xlsx / pdf)
+        run: node test/export.smoke.mjs
+
+  packaging:
+    name: tarball is self-contained
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Pack
+        working-directory: packages/dsh-plugin-duckbi
+        run: npm pack --pack-destination "${{ github.workspace }}/dist"
+
+      - name: Install the tarball in a clean project and run a real query
+        shell: pwsh
+        run: |
+          $tgz = (Get-ChildItem dist\*.tgz | Select-Object -First 1).FullName
+          $tmp = Join-Path $env:RUNNER_TEMP "pkgtest"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          Set-Location $tmp
+          npm init -y --silent | Out-Null
+          npm install $tgz --no-audit --no-fund | Out-Null
+          @'
+          import { apply } from '@duckbi/dsh-plugin-duckbi'
+          const defs = new Map()
+          const ctx = {
+            tools: { register: (d) => { defs.set(d.name, d); return () => {} } },
+            on: () => {}, get: () => undefined, effect: () => {}, logger: () => {},
+          }
+          apply(ctx, { dataDir: './wh', warmup: 'lazy', sources: [] })
+          for (const name of ['duckbi_source', 'duckbi_schema', 'duckbi_query', 'duckbi_chart', 'duckbi_export']) {
+            if (!defs.has(name)) { console.error('missing tool: ' + name); process.exit(1) }
+          }
+          const value = await defs.get('duckbi_query').execute(
+            { sql: "SELECT 40 + 2 AS answer, '中文' AS label, version() AS duckdb" },
+            { signal: new AbortController().signal },
+          )
+          const row = value.rows[0]
+          if (row[0] !== 42 || row[1] !== '中文') { console.error('unexpected row: ' + JSON.stringify(row)); process.exit(1) }
+          console.log('tarball ok — 5 tools registered, DuckDB ' + row[2])
+          '@ | Set-Content -Encoding utf8 probe.mjs
+          node probe.mjs

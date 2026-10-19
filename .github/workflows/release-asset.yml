@@ -1,0 +1,83 @@
+name: Release asset
+
+# 目的：让「Release 上挂的包」永远等于「该 tag 的源码 npm pack 出来的包」。
+# 背景：0.1.0 首次发布时手滑传了修复前的旧包，导致安装器少了一个修 YAML 的逻辑。
+#
+# 策略：
+#   - Release 没有任何 .tgz 资产 -> 自动从 tag 打包并上传（新发布省一步手工）；
+#   - 已有资产 -> 逐文件比对；不一致就红叉并给出正确 sha256，由人决定是否替换
+#     （不自动删除已有资产，避免悄悄覆盖掉别人已经下载过的东西）。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要校验的 tag（例如 v0.1.0）'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-asset-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: tarball matches source
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Pack from source
+        run: |
+          # 必须 cd 进去：`npm pack --prefix` 会打成仓库根目录那个 package（duckbi-dsh），
+          # 而不是插件包（@duckbi/dsh-plugin-duckbi）。
+          cd packages/dsh-plugin-duckbi
+          npm pack --pack-destination "$GITHUB_WORKSPACE/dist"
+          cd "$GITHUB_WORKSPACE"
+          ls -l dist
+          echo "### 源码打的包" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          (cd dist && sha256sum *.tgz | tee -a "$GITHUB_STEP_SUMMARY")
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download current release assets
+        run: |
+          mkdir -p release-assets
+          gh release download "$TAG" --dir release-assets --pattern '*.tgz' \
+            || echo "该 Release 还没有 .tgz 资产"
+
+      - name: Upload the freshly packed tarball when the release has none
+        id: upload
+        run: |
+          count=$(find release-assets -name '*.tgz' | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "没有资产 -> 上传 $(basename dist/*.tgz)"
+            gh release upload "$TAG" dist/*.tgz --clobber
+            echo "uploaded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "已有 $count 个资产 -> 只校验，不覆盖"
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compare every file inside both tarballs
+        if: steps.upload.outputs.uploaded != 'true'
+        run: |
+          fresh=$(find dist -name '*.tgz' | head -n 1)
+          for released in release-assets/*.tgz; do
+            echo "比对：$(basename "$released")"
+            node .github/scripts/verify-release-asset.mjs "$fresh" "$released"
+          done

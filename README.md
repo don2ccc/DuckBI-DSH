@@ -5,6 +5,9 @@
 
 `#dsh-plugin` · `DuckDB` · `local-first` · `Excel / Log / CSV / JSON` · `MIT`
 
+[![CI](https://github.com/don2ccc/DuckBI-DSH/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/don2ccc/DuckBI-DSH/actions/workflows/ci.yml)
+[![Release asset](https://github.com/don2ccc/DuckBI-DSH/actions/workflows/release-asset.yml/badge.svg)](https://github.com/don2ccc/DuckBI-DSH/actions/workflows/release-asset.yml)
+
 ![各区域销售额](docs/images/chart-region.png)
 
 ---
