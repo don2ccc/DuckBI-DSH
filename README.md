@@ -3,7 +3,15 @@
 **中文** | [English](README.en.md)
 
 > **本地 DuckDB 引擎 · 对话式取数 · 一键出图出报表**
+> 
 > 不用上传文件、不用建仓库、不用学 BI 工具 —— 指一个目录，然后开始聊天。
+
+
+**前置条件**
+
+> **你需要先安装 DeepSeek Harness desktop，然后才能使用本项目的所有功能**
+> 
+> 本项目是一个dsh插件，核心用duckdb引擎做的，不建议单独运行。如果感兴趣，您可以尝试在codex, claude或者任何其他的code agent产品中安装，但是不保证使用效果。
 
 `#dsh-plugin` · `DuckDB` · `local-first` · `Excel / Log / CSV / JSON` · `MIT`
 
