@@ -1,6 +1,6 @@
 {
   "name": "duckbi-dsh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "DuckBI - a DeepSeek Harness plugin that turns folders of .log / Excel files into a chattable DuckDB data warehouse with in-chat tables, charts and Excel/PDF export.",
   "type": "module",

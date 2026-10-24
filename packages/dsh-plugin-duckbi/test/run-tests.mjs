@@ -12,7 +12,7 @@
  */
 
 import ExcelJS from 'exceljs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
@@ -214,6 +214,13 @@ async function main() {
       assert(schema.description.length > 40, `${schema.name} has a thin description`)
     }
   })
+  await check('tool descriptions stay compact (they ride in every request)', () => {
+    const total = tools
+      .schemas()
+      .filter((entry) => entry.name.startsWith('duckbi_'))
+      .reduce((sum, schema) => sum + schema.description.length, 0)
+    assert(total < 3200, `tool descriptions total ${total} characters; trim them or move detail into tool output`)
+  })
 
   // -------------------------------------------------------------------------
   section('ingestion')
@@ -227,6 +234,16 @@ async function main() {
     for (const name of ['sales', 'logs', 'data']) {
       assert(names.includes(name), `missing source ${name}; got ${names.join(', ')}`)
     }
+  })
+  await check('source list is compact by default (no per-table inventory)', () => {
+    assert(/tables/.test(listResult.text), 'table count missing from the summary')
+    assert(!listResult.text.includes('| table | source file | kind | rows |'), 'compact list printed the full table inventory')
+    assert(listResult.text.length < 3000, `compact list is too long: ${listResult.text.length} characters`)
+  })
+  await check('detail:true restores the full table inventory', async () => {
+    const detailed = await call('duckbi_source', { action: 'list', detail: true })
+    assert(detailed.ok, detailed.error)
+    assert(detailed.text.includes('| table | source file | kind | rows |'), 'detail list did not render the table inventory')
   })
   await check('one bad workbook does not abort the scan of its folder', () => {
     const dataFiles = listResult.value.files.filter((file) => file.source === 'data')
@@ -299,6 +316,18 @@ async function main() {
     assert(!result.ok, 'expected a failure')
     assert(/duckbi|available tables/i.test(result.error), `unhelpful error: ${result.error}`)
   })
+  await check('schema search describes a single table in one call', async () => {
+    const result = await call('duckbi_schema', { query: 'orders' })
+    assert(result.ok, result.error)
+    assertEqual(result.value.table, 'orders', 'search should resolve the orders table')
+    assert(Array.isArray(result.value.columns) && result.value.columns.length > 0, 'search did not describe the table')
+  })
+  await check('schema search with no match returns an empty catalog', async () => {
+    const result = await call('duckbi_schema', { query: 'definitely-not-a-table' })
+    assert(result.ok, result.error)
+    assertEqual(result.value.tables.length, 0, 'unexpected match')
+    assert(/No table matches/.test(result.text), 'no-match text did not explain the search')
+  })
 
   // -------------------------------------------------------------------------
   section('query')
@@ -339,6 +368,15 @@ async function main() {
     const result = await call('duckbi_query', { sql: 'SELECT * FROM src_sales.orders', maxRows: 3, countTotal: false })
     assert(result.ok, result.error)
     assertEqual(result.value.truncated, true, 'truncated flag')
+  })
+
+  await check('DuckDB runs with the performance-oriented settings', async () => {
+    const result = await call('duckbi_query', {
+      sql: "SELECT current_setting('preserve_insertion_order') AS ordering, current_setting('temp_directory') AS temp",
+    })
+    assert(result.ok, result.error)
+    assertEqual(String(result.value.rows[0][0]), 'false', 'preserve_insertion_order setting')
+    assert(String(result.value.rows[0][1]).length > 0, 'temp_directory was not configured')
   })
 
   await check('log severity aggregation works on the text log', async () => {
@@ -603,6 +641,67 @@ async function main() {
     assertEqual(formatOf('orders'), '#,##0', 'integer columns keep the integer format')
   })
 
+  const richReport = await call('duckbi_export', {
+    format: 'both',
+    path: path.join(tempRoot, 'rich-report'),
+    title: '经营周报',
+    subtitle: 'DuckBI 自动化测试',
+    sections: [
+      {
+        kind: 'kpi',
+        title: '核心指标',
+        sql:
+          "SELECT '订单数' AS label, count(*) AS value, '全部订单' AS hint FROM src_sales.orders " +
+          "UNION ALL SELECT '销售额', round(sum(amount), 2), '元' FROM src_sales.orders",
+      },
+      {
+        kind: 'table',
+        title: '区域汇总',
+        sql: 'SELECT region, count(*) AS orders, round(sum(amount), 2) AS revenue FROM src_sales.orders GROUP BY 1 ORDER BY 3 DESC',
+      },
+      {
+        kind: 'chart',
+        title: '区域销售额',
+        sql: 'SELECT region, round(sum(amount), 2) AS revenue FROM src_sales.orders GROUP BY 1 ORDER BY 2 DESC',
+        chart: { type: 'bar', x: 'region', y: ['revenue'] },
+      },
+      {
+        kind: 'text',
+        title: '结论',
+        body: '华东与华南贡献了主要销售额，建议继续加大区域投放。',
+      },
+    ],
+  })
+  await check('a sections report writes a PDF and a multi-sheet workbook in one call', async () => {
+    assert(richReport.ok, richReport.error)
+    assertEqual(richReport.value.files.length, 2, 'expected a PDF and an XLSX')
+    const pdf = richReport.value.files.find((file) => file.format === 'pdf')
+    const xlsx = richReport.value.files.find((file) => file.format === 'xlsx')
+    assert(pdf && xlsx, 'missing one of the report files')
+    const head = (await readFile(pdf.path)).subarray(0, 5).toString('latin1')
+    assertEqual(head, '%PDF-', 'PDF magic bytes')
+    assert(pdf.pages >= 2, `expected a multi-page report, got ${pdf.pages} page(s)`)
+    assert(pdf.bytes > 10000, `report PDF suspiciously small: ${pdf.bytes} bytes`)
+    assertEqual(richReport.value.charts, 1, 'chart count')
+    assertEqual(richReport.value.sections, 4, 'section count')
+
+    const book = new ExcelJS.Workbook()
+    await book.xlsx.readFile(xlsx.path)
+    const names = book.worksheets.map((worksheet) => worksheet.name)
+    for (const expectedName of ['核心指标', '区域汇总', '区域销售额', '结论', 'Info']) {
+      assert(names.includes(expectedName), `missing worksheet "${expectedName}"; got ${names.join(', ')}`)
+    }
+    const kpiSheet = book.getWorksheet('核心指标')
+    assert(kpiSheet && kpiSheet.rowCount >= 3, 'KPI worksheet has no rows')
+  })
+  await check('a sections report rejects formats it cannot produce', async () => {
+    const result = await call('duckbi_export', {
+      format: 'csv',
+      sections: [{ kind: 'text', title: 'note', body: 'x' }],
+    })
+    assert(!result.ok, 'csv sections report was accepted')
+  })
+
   // -------------------------------------------------------------------------
   section('lifecycle')
   // -------------------------------------------------------------------------
@@ -624,6 +723,18 @@ async function main() {
     const query = await call('duckbi_query', { sql: 'SELECT count(*) FROM src_logs.extra' })
     assert(query.ok, query.error)
     assertEqual(Number(query.value.rows[0][0]), 2, 'new file row count')
+  })
+
+  await check('a single file can be registered without adding its whole folder', async () => {
+    const singleDir = path.join(tempRoot, 'single-file')
+    await mkdir(singleDir, { recursive: true })
+    await writeFile(path.join(singleDir, 'one.csv'), 'id,value\n1,10\n2,20\n', 'utf8')
+    const added = await call('duckbi_source', { action: 'add', path: path.join(singleDir, 'one.csv') })
+    assert(added.ok, added.error)
+    assert(added.value.created, 'the single-file source was not created')
+    const query = await call('duckbi_query', { sql: 'SELECT count(*) FROM src_one.one' })
+    assert(query.ok, query.error)
+    assertEqual(Number(query.value.rows[0][0]), 2, 'single-file row count')
   })
 
   await check('removing a source drops its schema', async () => {

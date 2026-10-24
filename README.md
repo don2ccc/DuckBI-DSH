@@ -29,7 +29,7 @@
 | 数据怎么进来 | 手动上传到 SaaS / 建数仓 / 写 ETL | **指一个文件夹，自动建表** |
 | 怎么取数 | 拖拽维度、写 DAX、找人提需求 | **说一句话，AI 写 SQL** |
 | 大文件 | 网页传不动、Excel 打不开 | **1.3 GB 日志 9 秒入库，370 万行秒级聚合** |
-| 报表 | 模板工具里拼 | **一句话导出 Excel / PDF** |
+| 报表 | 模板工具里拼 | **一次生成多节报告：KPI 卡 + 表 + 图 + 结论** |
 | 数据边界 | 全量上传云 | **原始文件永不外发；计算全在本机** |
 
 **它不是一个"上传文件给 AI 看"的工具，而是一个装在你机器上的分析引擎，AI 只负责下命令。**
@@ -73,7 +73,8 @@ AI：→ 扫描 13 个文件 → 建了 3 张表（1,099,083 行），9.4 秒
 
 支持 `.log` `.csv` `.tsv` `.json` `.jsonl` `.ndjson` `.parquet` `.xlsx` `.xlsm`，
 压缩包（`.gz` / `.zst`）直接读，**GB18030 中文编码自动识别转码**，
-Excel 多个工作表自动拆成多张表，**中文表头原样保留**。
+Excel 多个工作表自动拆成多张表，**中文表头原样保留**。也可以直接指**单个文件**，
+插件会只登记它、不扫描整个目录。
 
 ### ② 聊天就是 SQL 编辑器
 
@@ -95,14 +96,23 @@ AI：（发现每个格子只有 1–3 单 → 主动降维到半年口径重算
 
 ```
 你：按这个口径做份报表，我要给总监汇报
-AI：→ 多节 PDF（区域积分卡 / 同期增长 / 交叉表，带图表与口径说明）+ 同口径 Excel
+AI：→ 一次生成多节 PDF + 同口径 Excel：KPI 卡 / 区域积分卡 / 同期增长 / 交叉表 / 图表 / 结论
 ```
 
-版式定下来后可以**固化成模板**，之后 `node scripts/report.mjs <源文件>` 一条命令重跑，
-不经过模型、0 token，适合日报/周报。
+给 `duckbi_export` 传 `sections` 就能一次调用产出**多节 PDF + 多工作表 Excel**：`kpi` 画成指标卡，
+`table` 出格式化表格，`chart` 把图直接嵌进 PDF，`text` 写结论。图表只渲染一次、PDF 与 Excel 共用同一批 SQL，
+不用为每一节再往返一次模型。版式定下来后可以**固化成模板**，之后 `node scripts/report.mjs <源文件>`
+一条命令重跑，不经过模型、0 token，适合日报/周报。
 
 Excel 带表头样式、冻结窗格、筛选、数字格式、生成信息页；PDF 是 A4 横向、跨页重复表头、页码、
-**中文字体内嵌**。
+**中文字体内嵌**，图表会按页面宽度自动缩放、避免标题与图分页。
+
+### ⑤ 为对话省 token
+
+- **工具描述压缩**：5 个工具的描述常驻每次请求，控制在约 2.5 KB。
+- **扫描/目录默认只回摘要**：几十上百个文件不会把"每文件一行"的表灌进上下文；需要时再 `detail: true`。
+- **schema 搜索**：`duckbi_schema { query: "orders" }` 命中一张表时直接返回列信息，省掉一次往返。
+- **报表一次调用**：多节报告只占一次工具往返，而不是"画图 + 导出"各来一遍。
 
 ---
 
@@ -188,24 +198,24 @@ node install.mjs
 
 ```powershell
 # 1) 直接把 GitHub Release 的包装进 profile（依赖随之安装；pnpm 会解析这个 tarball URL）
-dsh plugin --profile desktop add https://github.com/don2ccc/DuckBI-DSH/releases/download/v0.1.0/duckbi-dsh-plugin-duckbi-0.1.0.tgz
+dsh plugin --profile desktop add https://github.com/don2ccc/DuckBI-DSH/releases/download/v0.2.0/duckbi-dsh-plugin-duckbi-0.2.0.tgz
 
 # 2) 再写配置（包已在 node_modules 里，用 --no-link 跳过软链）
 node "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@duckbi\dsh-plugin-duckbi\install.mjs" --no-link
 ```
 
-也可以先用浏览器下载 [Releases 里的 `.tgz`](https://github.com/don2ccc/DuckBI-DSH/releases/tag/v0.1.0)，
+也可以先用浏览器下载 [Releases 里的 `.tgz`](https://github.com/don2ccc/DuckBI-DSH/releases/tag/v0.2.0)，
 或者拿同事发你的包，把第一步换成本地路径：
 
 ```powershell
-dsh plugin --profile desktop add .\duckbi-dsh-plugin-duckbi-0.1.0.tgz
+dsh plugin --profile desktop add .\duckbi-dsh-plugin-duckbi-0.2.0.tgz
 ```
 
 自己打包给同事：
 
 ```powershell
 cd packages\dsh-plugin-duckbi
-npm pack          # -> duckbi-dsh-plugin-duckbi-0.1.0.tgz（约 80 KB，不含 node_modules）
+npm pack          # -> duckbi-dsh-plugin-duckbi-0.2.0.tgz（约 80 KB，不含 node_modules）
 ```
 
 > **不要把 `node_modules` 拷给别人。** `@duckdb/node-api` 和 `@napi-rs/canvas` 带平台原生二进制，
@@ -275,7 +285,7 @@ Get-Content "$env:USERPROFILE\.dsh\duckbi\plugin-loaded.json"
 ```json
 {
   "plugin": "@duckbi/dsh-plugin-duckbi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "pid": 41008,
   "electron": "44.0.0",
   "duckdb": "v1.5.6",
@@ -350,7 +360,8 @@ FREESHIP 促销的运费没有归零、单价与商品无关、退货率 24.8% �
 
 - **DuckDB 列存 + 向量化**：370 万行聚合是毫秒级（demo 里 9 ms）。
 - **物化表，不是视图**：首次扫描有成本，之后每次查询都命中本地列存。
-- **增量扫描**：按 `(大小, mtime)` 判断，改一个文件只重算一个文件。
+- **增量扫描**：按 `(大小, mtime)` 判断，改一个文件只重算一个文件；`stat` 并发探测，大目录不再逐个排队。
+- **DuckDB 调优**：排序/哈希溢出落到本地 `temp` 目录，关闭对话无关的插入顺序保序和进度条。
 - **报表可 0 token 重跑**：口径定下来后，`node scripts/report.mjs` 直接出 PDF，不经过模型。
 
 ---
@@ -369,10 +380,10 @@ FREESHIP 促销的运费没有归零、单价与商品无关、退货率 24.8% �
 packages/dsh-plugin-duckbi/   插件本体（可分发的 npm 包，78 KB tarball）
   lib/                        engine / ingest / catalog / sql / chart / exporters / tools
   install.mjs                 自包含安装器（软链 + 写配置 + 卸载）
-  test/                       55 项端到端断言 + 图表/导出冒烟测试
+  test/                       64 项端到端断言 + 图表/导出冒烟测试
 scripts/
   install.mjs                 仓库内安装入口（转发到包内安装器）
-  demo.mjs                    造演示数据，跑通全流程，产出样例
+  demo.mjs                    造演示数据，跑通全流程，产出样例（含多节富报表）
   report.mjs                  报表模板：一条命令出 PDF + Excel
 docs/
   architecture.zh.md          设计文档：摄入路径、并发模型、取舍
@@ -384,7 +395,7 @@ docs/
 ```bash
 cd packages/dsh-plugin-duckbi
 npm install
-node test/run-tests.mjs      # 55/55：真实 cordis + 真实工具管线 + 真实 DuckDB
+node test/run-tests.mjs      # 64/64：真实 cordis + 真实工具管线 + 真实 DuckDB
 node test/chart.smoke.mjs    # 图表 15 例
 node test/export.smoke.mjs   # Excel/PDF 87 项断言
 ```

@@ -396,6 +396,7 @@ async function writeInfoSheet(workbook, spec, ctx) {
       ['Sheet title', sheet.title ? String(sheet.title) : ''],
       ['Rows', rowText],
       ['Column count', String(sheet.columnCount)],
+      ['Note', sheet.note ? String(sheet.note) : ''],
       ['Producing SQL', sheet.sql ? String(sheet.sql) : ''],
     ];
     for (const [label, value] of details) {
@@ -491,6 +492,7 @@ export async function exportXlsx(spec) {
         name,
         title: sheet.title,
         sql: sheet.sql,
+        note: sheet.note,
         rowsShown: 0,
         totalRows: Number.isFinite(sheet.totalRows) ? sheet.totalRows : 0,
         columnCount: 0,
@@ -564,6 +566,7 @@ export async function exportXlsx(spec) {
       name,
       title: sheet.title,
       sql: sheet.sql,
+      note: sheet.note,
       rowsShown: limit,
       totalRows: Number.isFinite(sheet.totalRows) ? sheet.totalRows : rows.length,
       columnCount,

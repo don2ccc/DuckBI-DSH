@@ -24,7 +24,7 @@ export const name = 'duckbi'
 export const inject = ['tools']
 
 /** Version stamped into the load marker and diagnostics. */
-const PLUGIN_VERSION = '0.1.0'
+const PLUGIN_VERSION = '0.2.0'
 
 /**
  * Mount the plugin: open the warehouse lazily, warm the configured sources in the

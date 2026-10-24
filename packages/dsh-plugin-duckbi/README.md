@@ -5,10 +5,12 @@
 把磁盘上的 **日志目录** 和 **Excel 台账** 变成可对话查询的数据仓库：DuckDB 负责存储与计算，
 Harness 负责理解你要什么。
 
-- **指个目录就能用**：`.log` / `.csv` / `.json` / `.jsonl` / `.parquet` / `.xlsx`（多工作表也拆表），支持 gzip/zstd 压缩、GB18030 中文编码。
+- **指个目录就能用**：`.log` / `.csv` / `.json` / `.jsonl` / `.parquet` / `.xlsx`（多工作表也拆表），支持 gzip/zstd 压缩、GB18030 中文编码；也可以只加**单个文件**。
 - **聊天里问数**：模型写 SQL、看结果、再改，反复迭代；只读闸门拦住 DDL/DML。
 - **表格与图表直接显示在对话里**：结果渲染成 Markdown 表格；图表是服务端渲染的 PNG，有附件服务时内嵌显示。
 - **一键导出**：`xlsx`（样式/冻结/筛选/Info 页）、`pdf`（A4 横向、重复表头、中文字体内嵌）、`csv` / `parquet` / `json`。
+- **富报表一次生成**：`duckbi_export` 的 `sections` 支持 KPI 卡、表格、图表、结论文本，一次调用出多节 PDF + 多工作表 Excel。
+- **对话成本可控**：工具输出默认聚合（目录/扫描不逐文件刷屏，`detail: true` 才展开），schema 支持按表名搜索。
 
 注册的 5 个工具：`duckbi_source`（管目录）、`duckbi_schema`（看结构）、`duckbi_query`（跑 SQL）、
 `duckbi_chart`（出图）、`duckbi_export`（导文件）。
@@ -41,7 +43,7 @@ node install.mjs       # 软链到 profile + 写配置
 
 ```bash
 # 1) 装进某个 profile（依赖随之安装）
-dsh plugin --profile desktop add ./duckbi-dsh-plugin-duckbi-0.1.0.tgz
+dsh plugin --profile desktop add ./duckbi-dsh-plugin-duckbi-0.2.0.tgz
 
 # 2) 写配置（包已就位，用 --no-link 跳过软链）
 node <profile>/node_modules/@duckbi/dsh-plugin-duckbi/install.mjs --no-link
@@ -94,10 +96,25 @@ cat ~/.dsh/duckbi/plugin-loaded.json
 这批日志里 Error 占比多少？按天画个趋势
 订单表和地区目标表按地区 join，看完成率排名，导出 Excel
 刚才那张图导成 PDF，标题写「2024 年 6 月运营周报」
+按这个口径做份周报：先放 4 个 KPI 卡，再放区域明细表，最后两张图和一段结论
 ```
 
 表名规则：每个源目录一个 schema（`src_<源名>`），每个文件一张表；Excel 每个工作表一张表
 （`<文件>__<工作表>`）。中文表头会保留原文，不会被改写。
+
+### 富报表：一次调用出 PDF + Excel
+
+`duckbi_export` 传 `format: "pdf" | "xlsx" | "both"` 和 `sections` 即可。每个 section 是下面之一：
+
+| kind | 必填 | 效果 |
+| --- | --- | --- |
+| `kpi` | `sql` | SQL 返回 `(label, value[, hint])`，PDF 里画成指标卡，Excel 里是一张指标表 |
+| `table` | `sql` 或 `table` | 带标题、注释和行数说明的格式化表格 |
+| `chart` | `sql` + `chart:{type,x,y,series?}` | 服务端渲染 PNG 并嵌入 PDF；Excel 里保留同口径数据表 |
+| `text` | `body` | 结论文本段落 |
+
+图表只渲染一次，PDF 与 Excel 共用同一批查询结果；PDF 会自动缩放图片、避免标题与图分页。
+单次最多 12 个 section。
 
 ---
 
@@ -132,7 +149,9 @@ cat ~/.dsh/duckbi/plugin-loaded.json
 - 非结构化日志是**启发式**解析（时间戳 / 级别 / `[MODULE.NNNN.NNNNs]` 事件码 / 续行）；
   自定义格式建议用 `regexp_extract` 在 SQL 里拆，`raw` 列永远保留原文。
 - 一个 `.log` 里的多行事件不会合并成一条记录（每行一行，堆栈续行用 `continuation` 标记）。
-- 图表是服务端渲染的静态 PNG，不支持缩放/联动。
+- 图表是服务端渲染的静态 PNG，不支持缩放/联动；富报表里的图表嵌入 PDF，Excel 侧保留数据表。
+- 富报表一次最多 12 个 section；`format: "both"` 时两个文件共用同一份行数上限（PDF 默认 2000 行/节）。
+- 目录/扫描输出默认是紧凑摘要；需要逐文件核对时给 `duckbi_source` 传 `detail: true`。
 - DuckDB 文件是**单写者**：同一仓库同一时间只能有一个 Harness 实例写入。
 - 截图/界面类需求不在范围内——它只处理表格与文本数据。
 

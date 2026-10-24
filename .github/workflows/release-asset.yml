@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '要校验的 tag（例如 v0.1.0）'
+        description: '要校验的 tag（例如 v0.2.0）'
         required: true
 
 permissions:

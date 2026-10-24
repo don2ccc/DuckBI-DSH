@@ -22,7 +22,7 @@
 | ① 指定磁盘位置，读取 `.log` / Excel，用 DuckDB 管理 | `duckbi_source` 注册目录 → 逐文件识别格式（CSV/TSV、JSON/JSONL、Parquet、XLSX 多工作表、非结构化 `.log`、`.gz`/`.zst` 压缩）→ 每个文件（每个工作表）建成一张 DuckDB 表，目录即 schema（`src_sales.orders`） |
 | ② 和 DeepSeek 反复聊、智能取数 | 5 个模型可见工具：先看目录（`duckbi_schema`）再写 SQL（`duckbi_query`）；读结果、改 SQL、再问，多轮往复都由模型自己驱动 |
 | ③ 在聊天框里展示数据 | 结果渲染成 GFM 表格（Harness 现有 Markdown 渲染器直接显示）；`duckbi_chart` 生成 PNG，**Harness 有附件服务时以图片块嵌入对话**，没有时落盘并在正文给出路径 |
-| ④ 导出 Excel / PDF | `duckbi_export` 支持 `xlsx`（带表头样式、冻结窗格、筛选、数字格式、Info 页）、`pdf`（A4 横向、跨页重复表头、页码、中文字体内嵌），另外支持 `csv`/`parquet`/`json` 直出 |
+| ④ 导出 Excel / PDF | `duckbi_export` 支持 `xlsx`（带表头样式、冻结窗格、筛选、数字格式、Info 页）、`pdf`（A4 横向、跨页重复表头、页码、中文字体内嵌），另外支持 `csv`/`parquet`/`json` 直出；传 `sections` 可一次生成**多节报告**（KPI 卡 / 表格 / 图表 / 结论文本），`format: "both"` 同时产出 PDF 与多工作表 Excel |
 
 ---
 
@@ -75,11 +75,11 @@ Get-Content "$env:USERPROFILE\.dsh\duckbi\plugin-loaded.json"
 
 | 工具 | 作用 | 典型参数 |
 | --- | --- | --- |
-| `duckbi_source` | 管理监听的目录 | `{action:"add", path:"D:\\logs", include:"*.log"}`、`{action:"list"}`、`{action:"refresh", name:"logs"}`、`{action:"remove", name:"logs"}` |
-| `duckbi_schema` | 看目录 / 看某张表的列、类型、空值率、基数、样例 | `{}` 或 `{table:"src_logs.app"}` |
+| `duckbi_source` | 管理监听的目录（也可只加一个文件） | `{action:"add", path:"D:\\logs", include:"*.log"}`、`{action:"list"}`、`{action:"refresh", name:"logs"}`、`{action:"remove", name:"logs"}`、`{action:"list", detail:true}` |
+| `duckbi_schema` | 看目录 / 看某张表的列、类型、空值率、基数、样例 | `{}`、`{table:"src_logs.app"}`、`{query:"orders"}`（单命中直接返回列信息） |
 | `duckbi_query` | 跑一条只读 SQL，返回 Markdown 表格 | `{sql:"SELECT level, count(*) n FROM src_logs.app GROUP BY 1 ORDER BY 2 DESC"}` |
 | `duckbi_chart` | 跑 SQL 并画图（bar/line/area/pie/scatter） | `{sql:"...", type:"line", x:"day", y:["errors"]}` |
-| `duckbi_export` | 导出文件 | `{format:"xlsx", sql:"...", title:"3月报错统计"}` |
+| `duckbi_export` | 导出文件或生成多节富报表 | `{format:"xlsx", sql:"...", title:"3月报错统计"}`；富报表 `{format:"both", sections:[{kind:"kpi", ...}, {kind:"chart", ...}]}` |
 
 几个实际可用的问法：
 
@@ -225,11 +225,11 @@ packages/dsh-plugin-duckbi/
   test/
     fixtures.mjs    覆盖各摄入路径的确定性测试数据（含 GB18030、gzip、坏 xlsx）
     harness.mjs     真实 cordis + dsh-tools 启动器与 call() 派发
-    run-tests.mjs   端到端测试（50 项断言）
+    run-tests.mjs   端到端测试（64 项断言）
     chart.smoke.mjs / export.smoke.mjs   两个展示层的冒烟测试
 scripts/
   install.mjs       安装/卸载到 DSH profile
-  demo.mjs          造一份演示数据，跑完整流程，产出 samples/
+  demo.mjs          造一份演示数据，跑完整流程，产出 samples/（含多节富报表）
 ```
 
 **设计取舍**：
@@ -240,6 +240,11 @@ scripts/
 - 元数据（源、文件、行数、错误）存在**同一个 DuckDB 文件**里，不会出现"表和台账对不上"的状态。
 - 非结构化日志用 DuckDB appender 流式写入（不是先把整个文件读进内存），2000 万行后主动收手并提示。
 - 展示层依赖（canvas/exceljs/pdfkit）都是**惰性 import**：只查数不画图时不会加载它们。
+- **对话输出默认聚合**：目录/扫描只回计数、类型汇总和表名样本，`detail: true` 才逐文件展开；schema 支持
+  按表名搜索并在单命中时直接描述，减少往返。
+- **一次调用出富报表**：`sections` 让 KPI、表格、图表、结论共用同一批查询结果；图表只渲染一次并嵌入 PDF。
+- **I/O 与引擎调优**：目录 `stat` 有界并发；DuckDB 的 `temp_directory` 指向数据目录，
+  关闭 `preserve_insertion_order` 以减少不必要的排序开销。
 
 ---
 
@@ -247,7 +252,7 @@ scripts/
 
 ```powershell
 cd packages\dsh-plugin-duckbi
-node test\run-tests.mjs      # 50 项端到端断言（真实 cordis + 真实工具管线 + 真实 DuckDB）
+node test\run-tests.mjs      # 64 项端到端断言（真实 cordis + 真实工具管线 + 真实 DuckDB）
 node test\chart.smoke.mjs    # 图表渲染 15 例
 node test\export.smoke.mjs   # Excel/PDF 导出 87 项断言
 
@@ -257,12 +262,14 @@ node scripts\demo.mjs        # 生成 samples\ 下的图表、xlsx、pdf、csv �
 
 `run-tests.mjs` 覆盖：格式识别（含 GB18030 转码、gzip 解压、坏文件不中断）、中文表头保留、
 时间戳/级别解析、堆栈续行标记、聚合正确性、结果截断与总数、只读闸门（DDL/多语句/CTE 里藏 DML）、
-图表生成与未知列报错、xlsx/pdf/csv 导出与回读校验、增量刷新、删源、加载凭证。
+图表生成与未知列报错、xlsx/pdf/csv 导出与回读校验、多节富报表（KPI/表格/图表/文本 → PDF+XLSX）、
+单文件注册、紧凑输出、schema 搜索、增量刷新、删源、加载凭证。
 
 `samples/` 里是 `demo.mjs` 的真实产物，可以直接打开判断观感：
 
 - [chart-revenue-by-region.png](samples/chart-revenue-by-region.png) · [chart-monthly-trend.png](samples/chart-monthly-trend.png) · [chart-log-levels.png](samples/chart-log-levels.png)
 - [sales-report.xlsx](samples/sales-report.xlsx) · [sales-report.pdf](samples/sales-report.pdf) · [monthly-summary.csv](samples/monthly-summary.csv)
+- [regional-report.pdf](samples/regional-report.pdf) · [regional-report.xlsx](samples/regional-report.xlsx)（KPI 卡 + 表 + 图 + 结论）
 - [console.txt](samples/console.txt)（对话里实际渲染出来的文本）
 
 ---
@@ -270,6 +277,8 @@ node scripts\demo.mjs        # 生成 samples\ 下的图表、xlsx、pdf、csv �
 ## 10. 已知限制与后续
 
 - **PDF 里的百分比列按原始数字输出**（`0.42` 而不是 `42%`）；xlsx 会按数据自动判定（值都在 0–1 才套 `0.00%`）。
+- **富报表的图表只嵌入 PDF**；Excel 侧保留同口径数据表（ExcelJS 流式写入不支持嵌入图片）。
+- **富报表一次最多 12 节**；`format: "both"` 时 PDF 与 Excel 共用同一行数上限（PDF 默认 2000 行/节）。
 - **非结构化日志是启发式解析**：自定义格式（如 nginx access log）建议先用 `regexp_extract` 在 SQL 里
   拆列，或在 `ingest.js` 里加一个 pattern；`raw` 列永远保留原文。
 - **一个 `.log` 文件里的多行事件**不会合并成一条记录（每行一行，堆栈续行用 `continuation` 标记）。
@@ -297,12 +306,12 @@ node scripts\demo.mjs        # 生成 samples\ 下的图表、xlsx、pdf、csv �
 # 你这边：打一个 78 KB 的包（只含 lib/ + install.mjs + README + LICENSE + package.json）
 cd packages\dsh-plugin-duckbi
 npm pack --pack-destination <repo>\dist
-# -> <repo>\dist\duckbi-dsh-plugin-duckbi-0.1.0.tgz
+# -> <repo>\dist\duckbi-dsh-plugin-duckbi-0.2.0.tgz
 ```
 
 ```powershell
 # 对方：装进 profile（dsh 会把 pnpm 转发过去，依赖自动装好）
-dsh plugin --profile desktop add .\duckbi-dsh-plugin-duckbi-0.1.0.tgz
+dsh plugin --profile desktop add .\duckbi-dsh-plugin-duckbi-0.2.0.tgz
 
 # 再写配置（包已在 node_modules 里，用 --no-link 跳过软链）
 node <profile>\node_modules\@duckbi\dsh-plugin-duckbi\install.mjs --no-link
@@ -343,7 +352,7 @@ Get-Content "$env:USERPROFILE\.dsh\duckbi\plugin-loaded.json"
 
 ### 分发前检查清单
 
-- [ ] `node test/run-tests.mjs` 全绿（55 项断言）
+- [ ] `node test/run-tests.mjs` 全绿（64 项断言）
 - [ ] `npm pack` 的清单里**没有** `node_modules` / `test/` / `.demo/`
 - [ ] `install.mjs` 在目标 profile 上能 `--help` / 安装 / `--remove`
 - [ ] 对方机器 `npm install` 后能 import（原生二进制与平台匹配）

@@ -10,6 +10,7 @@
 
 import { readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { pruneTemp } from './encoding.js'
 import { ingestFile, logicalExtension, SUPPORTED_EXTENSIONS, tableNameFor } from './ingest.js'
 import { hash6, isInside, quoteIdent, quoteLiteral, slugify } from './util.js'
 
@@ -31,6 +32,8 @@ const SKIP_DIRECTORIES = new Set([
 
 /**
  * Translate a glob (`*`, `**`, `?`) into an anchored regular expression.
+ * A backslash escapes the next character, so an exact file name such as
+ * `orders[2024].csv` can be registered as an include pattern.
  * @param {string} glob - the glob pattern.
  * @returns {RegExp} matcher anchored at both ends.
  */
@@ -38,7 +41,10 @@ export function globToRegExp(glob) {
   let out = ''
   for (let index = 0; index < glob.length; index += 1) {
     const char = glob[index]
-    if (char === '*') {
+    if (char === '\\' && index + 1 < glob.length) {
+      out += String(glob[index + 1]).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      index += 1
+    } else if (char === '*') {
       if (glob[index + 1] === '*') {
         out += '.*'
         index += 1
@@ -55,6 +61,38 @@ export function globToRegExp(glob) {
     }
   }
   return new RegExp(`^${out}$`, 'i')
+}
+
+/**
+ * Escape a literal file name so it can be used inside an include/exclude glob.
+ * @param {string} text - raw file name.
+ * @returns {string} the escaped pattern.
+ */
+export function escapeGlob(text) {
+  return String(text).replace(/[\\*?[\]]/g, '\\$&')
+}
+
+/**
+ * Merge two comma/semicolon-separated glob lists, keeping the first occurrence.
+ * @param {string | null | undefined} base - existing spec.
+ * @param {string | null | undefined} extra - additional spec.
+ * @returns {string} the merged spec.
+ */
+export function mergeGlobList(base, extra) {
+  const parts = []
+  const seen = new Set()
+  for (const spec of [base, extra]) {
+    if (!spec) continue
+    for (const part of String(spec).split(/[,;]/)) {
+      const trimmed = part.trim()
+      if (trimmed === '') continue
+      const key = trimmed.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      parts.push(trimmed)
+    }
+  }
+  return parts.join(',')
 }
 
 /**
@@ -81,7 +119,32 @@ export function schemaFor(source) {
 }
 
 /**
+ * Run `worker` over `items` with at most `limit` promises in flight.
+ * @template T
+ * @param {T[]} items - work items.
+ * @param {number} limit - concurrency.
+ * @param {(item: T) => Promise<void>} worker - async worker.
+ * @returns {Promise<void>} resolves when every item is done.
+ */
+async function mapLimit(items, limit, worker) {
+  let cursor = 0
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor
+      cursor += 1
+      await worker(items[index])
+    }
+  })
+  await Promise.all(runners)
+}
+
+/**
  * Walk a directory and collect ingesting candidates.
+ *
+ * Directory reads are sequential (they are cheap and must preserve the recursion
+ * order), but `stat` calls are issued with bounded concurrency: a folder of 20k
+ * files otherwise spends most of its first scan waiting on one metadata call at a
+ * time.
  * @param {object} options - walk request.
  * @param {string} options.root - absolute directory.
  * @param {boolean} options.recursive - descend into subdirectories.
@@ -96,6 +159,8 @@ export async function walkSource(options) {
   const files = []
   /** @type {{relPath: string, reason: string}[]} */
   const skipped = []
+  /** @type {{absPath: string, relPath: string}[]} */
+  const pending = []
   let truncated = false
   const maxFiles = options.maxFiles ?? 20000
 
@@ -112,10 +177,7 @@ export async function walkSource(options) {
       return
     }
     for (const entry of entries) {
-      if (files.length >= maxFiles) {
-        truncated = true
-        return
-      }
+      if (truncated) return
       const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
       if (entry.isDirectory()) {
         if (!recursive) continue
@@ -134,32 +196,39 @@ export async function walkSource(options) {
         continue
       }
       if (exclude.some((matcher) => matcher.test(relPath) || matcher.test(entry.name))) continue
-      const absPath = path.join(dir, entry.name)
-      try {
-        const info = await stat(absPath)
-        if (info.size === 0) {
-          skipped.push({ relPath, reason: 'file is empty' })
-          continue
-        }
-        if (info.size > maxFileBytes) {
-          skipped.push({ relPath, reason: `file is larger than the ${Math.round(maxFileBytes / 1024 ** 2)} MB per-file limit` })
-          continue
-        }
-        files.push({
-          absPath,
-          relPath,
-          size: info.size,
-          mtimeMs: info.mtimeMs,
-          mtime: new Date(info.mtimeMs).toISOString(),
-        })
-      } catch (error) {
-        skipped.push({ relPath, reason: `unreadable (${String(error?.message ?? error)})` })
+      if (pending.length >= maxFiles) {
+        truncated = true
+        return
       }
+      pending.push({ absPath: path.join(dir, entry.name), relPath })
     }
   }
 
   await visit(root, '')
+  await mapLimit(pending, 16, async ({ absPath, relPath }) => {
+    try {
+      const info = await stat(absPath)
+      if (info.size === 0) {
+        skipped.push({ relPath, reason: 'file is empty' })
+        return
+      }
+      if (info.size > maxFileBytes) {
+        skipped.push({ relPath, reason: `file is larger than the ${Math.round(maxFileBytes / 1024 ** 2)} MB per-file limit` })
+        return
+      }
+      files.push({
+        absPath,
+        relPath,
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+        mtime: new Date(info.mtimeMs).toISOString(),
+      })
+    } catch (error) {
+      skipped.push({ relPath, reason: `unreadable (${String(error?.message ?? error)})` })
+    }
+  })
   files.sort((a, b) => a.relPath.localeCompare(b.relPath))
+  skipped.sort((a, b) => a.relPath.localeCompare(b.relPath))
   return { files, skipped, truncated }
 }
 
@@ -214,16 +283,20 @@ export function uniqueSourceName(existing, wanted) {
 }
 
 /**
- * Register a directory as a source without scanning it.
+ * Register a directory (or one file) as a source without scanning it.
+ *
+ * A single file is registered as its parent folder plus an include glob for that
+ * exact name, which keeps the catalog model ("one source = one folder") intact
+ * while letting the user point at one workbook or log.
  * @param {import('./engine.js').Engine} engine - engine instance.
  * @param {object} request - registration request.
- * @param {string} request.dir - absolute directory.
+ * @param {string} request.dir - absolute directory or file.
  * @param {string} [request.name] - preferred source name.
  * @param {boolean} [request.recursive] - descend into subdirectories.
  * @param {string} [request.include] - include globs.
  * @param {string} [request.exclude] - exclude globs.
  * @param {boolean} [request.multiSheet] - split worksheets into separate tables.
- * @returns {Promise<{source: string, dir: string, created: boolean}>} the registration outcome.
+ * @returns {Promise<{source: string, dir: string, created: boolean, updated?: boolean}>} the registration outcome.
  */
 export async function registerSource(engine, request) {
   const absolute = path.resolve(request.dir)
@@ -231,31 +304,57 @@ export async function registerSource(engine, request) {
   try {
     info = await stat(absolute)
   } catch {
-    throw new Error(`directory "${absolute}" does not exist or is not readable`)
+    throw new Error(`"${absolute}" does not exist or is not readable`)
   }
-  if (!info.isDirectory()) throw new Error(`"${absolute}" is a file; DuckBI registers folders, not single files`)
+  if (!info.isDirectory() && !info.isFile()) {
+    throw new Error(`"${absolute}" is neither a directory nor a regular file`)
+  }
+
+  let dir = absolute
+  let include = request.include ? String(request.include) : null
+  let name = request.name
+  let recursive = request.recursive ?? true
+  if (info.isFile()) {
+    dir = path.dirname(absolute)
+    include = mergeGlobList(include, escapeGlob(path.basename(absolute)))
+    name = name ?? path.basename(absolute, path.extname(absolute))
+    // A single-file source never needs to descend; this keeps refreshes cheap.
+    recursive = false
+  }
+
   const existing = await readSources(engine)
-  const match = existing.find((row) => path.resolve(String(row.dir)) === absolute)
+  const match = existing.find((row) => path.resolve(String(row.dir)) === dir)
   if (match) {
-    return { source: String(match.source), dir: absolute, created: false }
+    let updated = false
+    // `null` include means "every supported file", so adding one file to such a
+    // source changes nothing. Only a source that already filters needs extending.
+    if (include && match.include) {
+      const merged = mergeGlobList(String(match.include), include)
+      if (merged !== String(match.include)) {
+        await engine.exec(`UPDATE _duckbi_sources SET include = ? WHERE source = ?`, [merged, String(match.source)])
+        updated = true
+      }
+    }
+    return { source: String(match.source), dir, created: false, updated }
   }
+
   const source = uniqueSourceName(
     existing.map((row) => String(row.source)),
-    request.name ?? path.basename(absolute) ?? 'source',
+    name || path.basename(dir) || 'source',
   )
   await engine.exec(
     `INSERT INTO _duckbi_sources (source, dir, recursive, include, exclude, multi_sheet, enabled, created_at, note)
      VALUES (?, ?, ?, ?, ?, ?, true, now(), NULL)`,
     [
       source,
-      absolute,
-      Boolean(request.recursive ?? true),
-      request.include ?? null,
+      dir,
+      Boolean(recursive),
+      include,
       request.exclude ?? null,
       Boolean(request.multiSheet ?? true),
     ],
   )
-  return { source, dir: absolute, created: true }
+  return { source, dir, created: true }
 }
 
 /**
@@ -461,6 +560,9 @@ export async function removeSource(engine, name, options = {}) {
   }
   await engine.exec(`DELETE FROM _duckbi_files WHERE source = ?`, [String(match.source)])
   await engine.exec(`DELETE FROM _duckbi_sources WHERE source = ?`, [String(match.source)])
+  // Source removal is the natural time to sweep cached transcoded/decompressed
+  // copies; the temp directory otherwise only grows for the life of the data dir.
+  await pruneTemp(engine.tempDir).catch(() => {})
   return { source: String(match.source), droppedTables: options.dropData !== false }
 }
 

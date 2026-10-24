@@ -113,6 +113,11 @@ export class Engine {
       ensureDir(this.extensionDir)
       const config = {
         extension_directory: this.extensionDir,
+        // Spill large joins/sorts into the data directory instead of the process
+        // heap, and do not pay for order preservation the SQL already controls.
+        temp_directory: this.tempDir,
+        preserve_insertion_order: 'false',
+        checkpoint_threshold: '256MB',
         threads: String(this.options.threads ?? 4),
         memory_limit: String(this.options.memoryLimit ?? '2GB'),
         // Keep the nightly extension fetch out of the query path: the excel

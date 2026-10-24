@@ -21,7 +21,7 @@
 | Getting data in | Upload to a SaaS, build a warehouse, write ETL | **Point at a folder — tables appear** |
 | Querying | Drag dimensions, write DAX, file a ticket | **Say it in one sentence; the AI writes the SQL** |
 | Big files | Web upload chokes, Excel won't open | **1.3 GB of logs ingested in 9 s; 3.7 M rows aggregated in milliseconds** |
-| Reporting | Assemble it in a template tool | **One sentence → Excel / PDF** |
+| Reporting | Assemble it in a template tool | **One call → KPI cards + tables + charts + narrative** |
 | Data boundary | Upload everything to the cloud | **Files never leave the machine; all compute is local** |
 
 **This is not "upload a file and let the AI look at it". It is an analytics engine installed on your
@@ -69,7 +69,8 @@ AI:  → scanned 13 files → created 3 tables (1,099,083 rows) in 9.4 s
 Supports `.log` `.csv` `.tsv` `.json` `.jsonl` `.ndjson` `.parquet` `.xlsx` `.xlsm`.
 Compressed files (`.gz` / `.zst`) are read directly, **GB18030 Chinese encoding is detected and
 transcoded automatically**, multi-sheet Excel workbooks become one table per sheet, and
-**non-ASCII column headers are preserved verbatim**.
+**non-ASCII column headers are preserved verbatim**. You can also point it at a **single file**;
+only that file is registered instead of scanning the whole folder.
 
 ### ② Chat is the SQL editor
 
@@ -93,8 +94,15 @@ bucketing are handled.
 
 ```
 You: turn this into a report for my director
-AI:  → multi-section PDF (region scorecard / YoY growth / cross-tab, with charts and caveats) + matching Excel
+AI:  → one call produces a multi-section PDF + matching Excel: KPI cards / region scorecard /
+     YoY growth / cross-tab / charts / narrative
 ```
+
+Pass `sections` to `duckbi_export` and one call produces a **multi-section PDF + multi-sheet
+workbook**: `kpi` becomes metric cards, `table` a formatted table, `chart` an embedded image, and
+`text` a narrative paragraph. Charts are rendered once and share the queries with Excel, so a
+six-section report costs one tool round trip instead of a chart call plus an export call per section.
+Set `format: "both"` to get the PDF and the workbook together.
 
 Once the layout is settled you can **freeze it into a template** and re-run
 `node scripts/report.mjs <source>` with no model involved and zero tokens — ideal for daily or
@@ -102,6 +110,15 @@ weekly reporting.
 
 Excel output ships with header styling, frozen panes, autofilter, number formats and an info sheet;
 PDF is A4 landscape with repeating headers across pages, page numbers and **embedded CJK fonts**.
+
+### ⑤ Fewer tokens per conversation
+
+- **Compact tool descriptions**: five tools stay around 2.5 KB in every request.
+- **Aggregated catalog/scan output**: hundreds of files no longer print one line each; pass
+  `detail: true` when you need the full inventory.
+- **Schema search**: `duckbi_schema { query: "orders" }` describes the table directly when it matches
+  exactly one, saving a round trip.
+- **One-call reports**: a rich report is one tool call, not separate chart and export calls.
 
 ---
 
@@ -192,24 +209,24 @@ node install.mjs
 
 ```powershell
 # 1) install the GitHub Release package into the profile (dependencies included; pnpm resolves the tarball URL)
-dsh plugin --profile desktop add https://github.com/don2ccc/DuckBI-DSH/releases/download/v0.1.0/duckbi-dsh-plugin-duckbi-0.1.0.tgz
+dsh plugin --profile desktop add https://github.com/don2ccc/DuckBI-DSH/releases/download/v0.2.0/duckbi-dsh-plugin-duckbi-0.2.0.tgz
 
 # 2) write the config (the package is already in node_modules, so --no-link skips the symlink)
 node "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@duckbi\dsh-plugin-duckbi\install.mjs" --no-link
 ```
 
-You can also download the [`.tgz` from the Releases page](https://github.com/don2ccc/DuckBI-DSH/releases/tag/v0.1.0)
+You can also download the [`.tgz` from the Releases page](https://github.com/don2ccc/DuckBI-DSH/releases/tag/v0.2.0)
 in a browser, or use a tarball a colleague sent you, and swap the first step for a local path:
 
 ```powershell
-dsh plugin --profile desktop add .\duckbi-dsh-plugin-duckbi-0.1.0.tgz
+dsh plugin --profile desktop add .\duckbi-dsh-plugin-duckbi-0.2.0.tgz
 ```
 
 Packing one yourself:
 
 ```powershell
 cd packages\dsh-plugin-duckbi
-npm pack          # -> duckbi-dsh-plugin-duckbi-0.1.0.tgz (~80 KB, no node_modules)
+npm pack          # -> duckbi-dsh-plugin-duckbi-0.2.0.tgz (~80 KB, no node_modules)
 ```
 
 > **Never copy `node_modules` to someone else.** `@duckdb/node-api` and `@napi-rs/canvas` ship
@@ -282,7 +299,7 @@ Get-Content "$env:USERPROFILE\.dsh\duckbi\plugin-loaded.json"
 ```json
 {
   "plugin": "@duckbi/dsh-plugin-duckbi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "pid": 41008,
   "electron": "44.0.0",
   "duckdb": "v1.5.6",
@@ -361,7 +378,10 @@ and the return rate is 24.8% regardless of any dimension.
 - **DuckDB columnar + vectorized**: aggregating 3.7 M rows takes milliseconds (9 ms in the demo).
 - **Materialized tables, not views**: the first scan costs something, every later query hits the local
   column store.
-- **Incremental scanning**: keyed on `(size, mtime)`, so touching one file only recomputes that file.
+- **Incremental scanning**: keyed on `(size, mtime)`, so touching one file only recomputes that file;
+  `stat` probes run with bounded concurrency instead of one at a time.
+- **Tuned DuckDB**: spills go to the local `temp` directory, and insertion-order preservation (not
+  needed for chat answers) is disabled.
 - **Zero-token report re-runs**: once the layout is settled, `node scripts/report.mjs` produces the PDF
   without the model.
 
@@ -382,10 +402,10 @@ and the return rate is 24.8% regardless of any dimension.
 packages/dsh-plugin-duckbi/   the plugin itself (a distributable npm package, ~80 KB tarball)
   lib/                        engine / ingest / catalog / sql / chart / exporters / tools
   install.mjs                 self-contained installer (link + config + uninstall)
-  test/                       55 end-to-end assertions + chart/export smoke tests
+  test/                       64 end-to-end assertions + chart/export smoke tests
 scripts/
   install.mjs                 in-repo entry point (forwards to the package installer)
-  demo.mjs                    builds demo data, runs the whole flow, writes samples
+  demo.mjs                    builds demo data, runs the whole flow, writes samples (incl. a rich report)
   report.mjs                  report template: PDF + Excel in one command
 docs/
   architecture.zh.md          design notes: ingestion paths, concurrency, trade-offs
@@ -397,7 +417,7 @@ docs/
 ```bash
 cd packages/dsh-plugin-duckbi
 npm install
-node test/run-tests.mjs      # 55/55: real cordis + real tool pipeline + real DuckDB
+node test/run-tests.mjs      # 64/64: real cordis + real tool pipeline + real DuckDB
 node test/chart.smoke.mjs    # 15 chart cases
 node test/export.smoke.mjs   # 87 Excel/PDF assertions
 ```

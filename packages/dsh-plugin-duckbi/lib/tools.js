@@ -104,14 +104,13 @@ export function registerDuckbiTools(ctx, runtime) {
       name: 'duckbi_source',
       description: [
         'Manage the folders DuckBI watches and turn their files into DuckDB tables.',
-        'Supported files: .log, .csv/.tsv, .json/.jsonl/.ndjson, .parquet, .xlsx/.xlsm (one table per worksheet), optionally gzip/zstd compressed.',
-        'A scan reads new and changed files only and drops tables whose file disappeared.',
+        'Supports .log, .csv/.tsv, .json/.jsonl/.ndjson, .parquet, .xlsx/.xlsm (one table per visible sheet), plus gzip/zstd. Scans re-ingest only changed files and drop tables whose file disappeared.',
         'actions:',
-        '- "add": register a folder (absolute path) and scan it immediately. Optional include/exclude take comma-separated globs such as "*.log,*.xlsx".',
-        '- "list": show registered sources, their tables and any per-file failures.',
-        '- "refresh": re-scan one source by name, or every source when name is omitted.',
+        '- "add": register a folder or a single file and scan it now. include/exclude are comma-separated globs.',
+        '- "list": sources, table counts and failures. Pass detail:true for the full table inventory.',
+        '- "refresh": re-scan one source (`name`) or all sources.',
         '- "remove": forget a source and drop its tables.',
-        'Each source owns the DuckDB schema named in the result, for example `src_sales`.',
+        'Each source owns the schema `src_<name>`; the scan result names the tables it produced.',
       ].join('\n'),
       parameters: {
         type: 'object',
@@ -123,10 +122,10 @@ export function registerDuckbiTools(ctx, runtime) {
             enum: ['add', 'list', 'refresh', 'remove'],
             description: 'What to do.',
           },
-          path: { type: 'string', description: 'Absolute folder path. Required for action="add".' },
+          path: { type: 'string', description: 'Absolute folder, or one file, to add.' },
           name: {
             type: 'string',
-            description: 'Short source name, defaulting to the folder name. Selects the source for "refresh"/"remove".',
+            description: 'Short source name, defaulting to the folder/file name. Selects the source for "refresh"/"remove".',
           },
           recursive: { type: 'boolean', description: 'Descend into subfolders. Default true.' },
           include: { type: 'string', description: 'Comma-separated include globs, e.g. "*.log,*.xlsx".' },
@@ -135,13 +134,17 @@ export function registerDuckbiTools(ctx, runtime) {
             type: 'boolean',
             description: 'For .xlsx files, load every visible worksheet as its own table. Default true.',
           },
+          detail: {
+            type: 'boolean',
+            description: 'List every table and file instead of a compact summary. Default false.',
+          },
         },
       },
       async execute(args) {
         const action = String(args.action)
         if (action === 'add') {
           const target = String(args.path ?? '').trim()
-          if (!target) throw new Error('action="add" needs `path` — the absolute folder to watch')
+          if (!target) throw new Error('action="add" needs `path` — the absolute folder or file to watch')
           assertAllowedPath(target, config.allowedRoots)
           const registration = await registerSource(engine, {
             dir: target,
@@ -158,11 +161,11 @@ export function registerDuckbiTools(ctx, runtime) {
             action,
             source: registration.source,
             created: registration.created,
+            updated: Boolean(registration.updated),
             dir: registration.dir,
             schema: schemaFor(registration.source),
             scan: summary,
             sources: await readSources(engine),
-            files: await readFiles(engine),
           }
         }
 
@@ -186,7 +189,7 @@ export function registerDuckbiTools(ctx, runtime) {
           for (const row of targets) {
             scans.push(await scanSource(engine, row, { maxFileBytes: config.maxFileBytes }))
           }
-          return { action, scans, sources: await readSources(engine), files: await readFiles(engine) }
+          return { action, scans, sources: await readSources(engine) }
         }
 
         if (action === 'remove') {
@@ -198,20 +201,21 @@ export function registerDuckbiTools(ctx, runtime) {
         throw new Error(`unsupported action "${action}"`)
       },
       render(_args, value) {
-        if (value.scan) return [{ type: 'text', text: renderScanSummary(value.scan) }]
+        const detail = _args?.detail === true
+        if (value.scan) return [{ type: 'text', text: renderScanSummary(value.scan, { detail }) }]
         if (Array.isArray(value.scans) && value.scans.length > 0) {
-          return [{ type: 'text', text: value.scans.map((scan) => renderScanSummary(scan)).join('\n\n') }]
+          return [{ type: 'text', text: value.scans.map((scan) => renderScanSummary(scan, { detail })).join('\n\n') }]
         }
         if (value.removed) {
           const dropped = value.removed.droppedTables ? ' and dropped its tables' : ''
           return [
             {
               type: 'text',
-              text: `Removed source \`${value.removed.source}\`${dropped}.\n\n${renderSources(value.sources, value.files)}`,
+              text: `Removed source \`${value.removed.source}\`${dropped}.\n\n${renderSources(value.sources, value.files, { detail })}`,
             },
           ]
         }
-        return [{ type: 'text', text: renderSources(value.sources, value.files) }]
+        return [{ type: 'text', text: renderSources(value.sources, value.files, { detail }) }]
       },
       presentCall: (args) => ({ card: 'generic', title: `DuckBI source · ${args.action ?? 'list'}` }),
     }),
@@ -221,16 +225,17 @@ export function registerDuckbiTools(ctx, runtime) {
     define({
       name: 'duckbi_schema',
       description: [
-        'Describe the DuckBI catalog: which tables exist, and for one table its columns, types, null counts, distinct counts and sample values.',
-        'Call it with no arguments for an overview, or with `table` (`table` or `schema.table`) before writing SQL against unfamiliar data.',
+        'Describe the DuckBI catalog: the tables that exist, and for one table its columns, types, nulls, distinct counts and sample values.',
+        'Call with no arguments for an overview; pass `table` (or `query` to search table names) before writing SQL against unfamiliar data.',
         'Reading the schema first is far cheaper than guessing column names and fixing errors.',
       ].join('\n'),
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          table: { type: 'string', description: 'Table to describe, e.g. "src_logs.app" or "app". Omit for every table.' },
+          table: { type: 'string', description: 'Table to describe, e.g. "src_logs.app" or "app".' },
           source: { type: 'string', description: 'Restrict the overview to one source name.' },
+          query: { type: 'string', description: 'Case-insensitive table-name search. A single match is described directly.' },
         },
       },
       async execute(args) {
@@ -243,28 +248,45 @@ export function registerDuckbiTools(ctx, runtime) {
         }
         const sources = await readSources(engine)
         const filter = args.source ? String(args.source) : null
+        const search = args.query ? String(args.query).trim() : ''
         const inventory = await engine.queryObjects(
           `SELECT table_schema, table_name, max(rows) AS rows
              FROM _duckbi_files
             WHERE coalesce(error, '') = '' AND table_name <> ''
             GROUP BY 1, 2
             ORDER BY 1, 2`,
-          { cap: 5000, countTotal: false },
+          { cap: 20000, countTotal: false },
         )
-        const tables = inventory.rows
+        let tables = inventory.rows
           .filter((row) => !filter || String(row.table_schema) === schemaFor(filter))
           .map((row) => ({
             schema: String(row.table_schema),
             table: String(row.table_name),
             rows: Number(row.rows ?? 0),
           }))
+        if (search !== '') {
+          const needle = search.toLowerCase()
+          tables = tables.filter((table) => `${table.schema}.${table.table}`.toLowerCase().includes(needle))
+        }
+        // A search that identifies exactly one table should answer completely in one
+        // call; making the model spend a second round trip to ask for its columns is
+        // pure token and latency waste.
+        if (search !== '' && tables.length === 1) {
+          const only = tables[0]
+          const rowCount = await engine.countTable(only.schema, only.table)
+          const columns = await describeTable(engine, only.schema, only.table, rowCount)
+          return { ...only, rowCount, columns, query: search }
+        }
+        if (search !== '') {
+          return { tables, sources, query: search }
+        }
         return { tables, sources }
       },
       render(_args, value) {
         if (Array.isArray(value.columns) && value.table) {
-          return [{ type: 'text', text: renderTableSchema(value) }]
+          return [{ type: 'text', text: renderTableSchema(value, { maxColumns: 80 }) }]
         }
-        return [{ type: 'text', text: renderCatalog(value.tables ?? [], value.sources ?? []) }]
+        return [{ type: 'text', text: renderCatalog(value.tables ?? [], value.sources ?? [], { query: value.query }) }]
       },
       presentCall: (args) => ({ card: 'generic', title: args.table ? `DuckBI schema · ${args.table}` : 'DuckBI catalog' }),
     }),
@@ -274,12 +296,10 @@ export function registerDuckbiTools(ctx, runtime) {
     define({
       name: 'duckbi_query',
       description: [
-        'Run one read-only SQL query with DuckDB and return the rows as a markdown table.',
-        '',
-        'DuckDB SQL is available in full: `SELECT`, `WITH`, joins, window functions, `GROUP BY ALL`, `QUALIFY`, `string_split`, `regexp_extract`, `date_trunc`, `list`/`struct` types, and file readers such as `read_csv`/`read_json_auto`/`read_parquet`.',
-        'Use the tables reported by `duckbi_schema`; quote identifiers that are not simple lowercase names.',
-        'The result is capped for display, so aggregate or add `ORDER BY`/`LIMIT` to answer over large tables. Mutating statements are refused.',
-        'Iterate freely with the user: run a query, show the table, refine it together.',
+        'Run one read-only DuckDB SQL statement and return up to `maxRows` rows as a markdown table.',
+        'DuckDB SQL is fully available (CTEs, joins, window functions, QUALIFY, regexp_extract, list/struct, file readers).',
+        'Use the tables and columns reported by `duckbi_schema`; quote identifiers that are not simple lowercase names.',
+        'The result is capped, so aggregate or add ORDER BY/LIMIT for large tables. Mutating statements are refused.',
       ].join('\n'),
       parameters: {
         type: 'object',
@@ -336,12 +356,9 @@ export function registerDuckbiTools(ctx, runtime) {
     define({
       name: 'duckbi_chart',
       description: [
-        'Run a read-only SQL query and draw it as a chart image, saved as a PNG and embedded in the conversation when the harness supports images.',
-        '',
-        'Provide `sql` returning at least an x column and a numeric y column; `x` and `y` name those columns in the result.',
-        'type: "bar" (category comparison), "line" (trend over time), "area" (volume trend), "pie" (share of a whole), "scatter" (two numeric measures).',
-        'Aggregate in SQL first (for example `GROUP BY category ORDER BY 2 DESC`) — the chart draws exactly what the query returns.',
-        'Set `series` to another column to draw one line or bar group per distinct value of it.',
+        'Run a read-only SQL query and draw it as a PNG chart, embedded in the chat when the harness supports images.',
+        '`x` and `y` name result columns; `type` is bar, line, area, pie or scatter. Aggregate in SQL first — the chart draws exactly what the query returns.',
+        'Set `series` to another column to draw one line or bar group per distinct value.',
       ].join('\n'),
       parameters: {
         type: 'object',
@@ -444,11 +461,14 @@ export function registerDuckbiTools(ctx, runtime) {
     define({
       name: 'duckbi_export',
       description: [
-        'Export a query result, or a whole table, to a file on disk.',
-        '',
-        'format: "xlsx" (styled workbook), "pdf" (A4 landscape report with repeated headers), "csv", "parquet", "json".',
-        'Pass `sql` for a computed result or `table` for an entire table. `csv`/`parquet`/`json` stream straight from DuckDB with no row cap; `xlsx` and `pdf` materialise up to `maxRows` rows.',
-        'After a successful export call `present` with the returned path so the user gets a download card in the chat.',
+        'Export a query result, a whole table, or a rich multi-section report.',
+        'format: "xlsx", "pdf", "csv", "parquet", "json" — or "both" (PDF + Excel) for a sections report.',
+        'Single result: pass `sql` or `table`. Rich report: pass `sections` (max 12), each one of:',
+        '- {kind:"kpi", title, sql} — SQL returns (label, value[, hint]) rows; drawn as KPI cards.',
+        '- {kind:"table", title, sql|table, note} — formatted table section.',
+        '- {kind:"chart", title, sql, chart:{type,x,y,series,width,height}} — chart image in PDF, data sheet in Excel.',
+        '- {kind:"text", title, body} — narrative paragraph.',
+        'csv/parquet/json stream straight from DuckDB with no row cap; xlsx/pdf cap rows. Call `present` with every returned path.',
       ].join('\n'),
       parameters: {
         type: 'object',
@@ -457,18 +477,62 @@ export function registerDuckbiTools(ctx, runtime) {
         properties: {
           format: {
             type: 'string',
-            enum: ['xlsx', 'pdf', 'csv', 'parquet', 'json'],
-            description: 'Output format.',
+            enum: ['xlsx', 'pdf', 'csv', 'parquet', 'json', 'both'],
+            description: 'Output format. "both" is only for a sections report.',
           },
           sql: { type: 'string', description: 'Read-only SQL producing the rows to export.' },
           table: { type: 'string', description: 'Table to export entirely, e.g. "src_sales.orders". Alternative to `sql`.' },
-          path: { type: 'string', description: 'Absolute output path. Omit to write into the DuckBI exports folder.' },
-          title: { type: 'string', description: 'Report title, used in the file name and the document header.' },
-          maxRows: { type: 'integer', description: 'Row cap for xlsx/pdf (default 200000 for xlsx, 2000 for pdf).' },
+          path: { type: 'string', description: 'Absolute output path or base path. Omit to write into the DuckBI exports folder.' },
+          title: { type: 'string', description: 'Report title, used in file names and the document header.' },
+          subtitle: { type: 'string', description: 'Optional report subtitle, used for cover and charts.' },
+          maxRows: { type: 'integer', description: 'Row cap per table/section (default 200000 for xlsx, 2000 for pdf).' },
+          sections: {
+            type: 'array',
+            description: 'Ordered report sections; rendered into one PDF and/or a multi-sheet workbook.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                kind: {
+                  type: 'string',
+                  enum: ['kpi', 'table', 'chart', 'text'],
+                  description: 'Section type. Default "table".',
+                },
+                title: { type: 'string', description: 'Section heading and sheet name.' },
+                sql: { type: 'string', description: 'Read-only SQL for kpi/table/chart sections.' },
+                table: { type: 'string', description: 'Whole-table alternative to `sql` for table sections.' },
+                note: { type: 'string', description: 'Short caption or methodology note.' },
+                body: { type: 'string', description: 'Narrative text for a text section.' },
+                maxRows: { type: 'integer', description: 'Row cap for this section.' },
+                chart: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    type: {
+                      type: 'string',
+                      enum: ['bar', 'line', 'area', 'pie', 'scatter'],
+                      description: 'Chart type.',
+                    },
+                    x: { type: 'string', description: 'X/category column.' },
+                    y: { type: 'array', items: { type: 'string' }, description: 'Measure column(s).' },
+                    series: { type: 'string', description: 'Optional column that splits the series.' },
+                    width: { type: 'integer', description: 'Logical chart width (default 900).' },
+                    height: { type: 'integer', description: 'Logical chart height (default 380).' },
+                  },
+                },
+              },
+            },
+          },
         },
       },
       async execute(args) {
         const format = String(args.format)
+        if (Array.isArray(args.sections) && args.sections.length > 0) {
+          return executeReport(args)
+        }
+        if (format === 'both') {
+          throw new Error('format "both" needs `sections` — pass one or more report sections')
+        }
         const sql = await exportSql(engine, args)
         const title = args.title ? String(args.title) : 'DuckBI export'
         const extension = format === 'xlsx' ? 'xlsx' : format === 'pdf' ? 'pdf' : format === 'parquet' ? 'parquet' : format === 'json' ? 'json' : 'csv'
@@ -554,6 +618,218 @@ export function registerDuckbiTools(ctx, runtime) {
       presentCall: (args) => ({ card: 'generic', title: `DuckBI export · ${args.format ?? 'xlsx'}` }),
     }),
   )
+
+  /**
+   * Build a multi-section PDF/XLSX report in one tool call.
+   *
+   * Each section is a self-contained query (or literal text); KPI cards, tables and
+   * chart images are laid out by the exporters. Charts are rendered once and reused
+   * by the PDF, so a 6-section executive report costs one tool round trip instead of
+   * a chart call plus an export call per section.
+   * @param {object} args - tool arguments with a `sections` array.
+   * @returns {Promise<object>} canonical report value with one or two file entries.
+   */
+  async function executeReport(args) {
+    const format = String(args.format)
+    if (format !== 'pdf' && format !== 'xlsx' && format !== 'both') {
+      throw new Error('a sections report supports format "pdf", "xlsx" or "both"')
+    }
+    const rawSections = (Array.isArray(args.sections) ? args.sections : []).filter(
+      (section) => section && typeof section === 'object',
+    )
+    if (rawSections.length === 0) throw new Error('`sections` is empty — pass at least one section')
+    if (rawSections.length > 12) throw new Error('at most 12 sections per report; split it into two exports')
+
+    const title = args.title ? String(args.title) : 'DuckBI report'
+    const subtitle = args.subtitle ? String(args.subtitle) : undefined
+    const baseCap = format === 'xlsx' ? Math.min(config.maxExportRows, 20000) : config.maxPdfRows
+    /** @type {object[]} */
+    const sheets = []
+    const notes = []
+    let totalRows = 0
+    let chartCount = 0
+
+    for (const [index, raw] of rawSections.entries()) {
+      const kind = ['kpi', 'table', 'chart', 'text'].includes(String(raw.kind)) ? String(raw.kind) : 'table'
+      const sectionTitle = raw.title ? String(raw.title) : `Section ${index + 1}`
+      const note = raw.note ? String(raw.note) : undefined
+
+      if (kind === 'text') {
+        const body = raw.body ? String(raw.body) : ''
+        if (body.trim() === '') throw new Error(`section "${sectionTitle}" (text) needs a non-empty \`body\``)
+        sheets.push({ name: sectionTitle, title: sectionTitle, kind: 'text', body, note })
+        continue
+      }
+
+      const sql = await exportSql(engine, raw)
+      const cap = clampRows(raw.maxRows, baseCap, 1000000)
+      const result = await engine.query(sql, { cap, countTotal: true })
+      if (result.rows.length === 0) {
+        notes.push(`section "${sectionTitle}" returned no rows`)
+        continue
+      }
+      totalRows += result.rowCount
+      if (result.truncated) {
+        notes.push(
+          `section "${sectionTitle}": showing ${formatCount(result.rowCount)} of ${formatCount(result.totalRowCount ?? -1)} rows`,
+        )
+      }
+      const columns = result.columns.map((column) => ({
+        name: column.name,
+        type: column.sqlType,
+        isNumeric: column.numeric,
+        isTemporal: column.temporal,
+      }))
+      const sheet = {
+        name: sectionTitle,
+        title: sectionTitle,
+        sql,
+        columns,
+        rows: result.rows,
+        totalRows: result.totalRowCount ?? result.rowCount,
+        note,
+      }
+
+      if (kind === 'kpi') {
+        if (result.columns.length < 2) {
+          throw new Error(
+            `section "${sectionTitle}" (kpi) must return at least two columns: label, value[, hint]`,
+          )
+        }
+        const kpis = result.rows.slice(0, 8).map((row) => ({
+          label: String(row[0] ?? ''),
+          value: row[1],
+          hint: row[2] === null || row[2] === undefined ? undefined : String(row[2]),
+        }))
+        sheets.push({ ...sheet, kind: 'kpi', kpis })
+        continue
+      }
+
+      if (kind === 'chart') {
+        const chartSpec = raw.chart && typeof raw.chart === 'object' ? raw.chart : {}
+        const chartType = String(chartSpec.type ?? 'bar')
+        const xName = chartSpec.x ? String(chartSpec.x) : ''
+        const yList = (Array.isArray(chartSpec.y) ? chartSpec.y : [chartSpec.y]).filter(Boolean).map(String)
+        if (xName === '' || yList.length === 0) {
+          throw new Error(`section "${sectionTitle}" (chart) needs chart.x and chart.y`)
+        }
+        const objects = result.rows.map((row) => {
+          const object = {}
+          result.columns.forEach((column, columnIndex) => {
+            object[column.name] = row[columnIndex]
+          })
+          return object
+        })
+        // An XLSX report cannot consume the PNG, so only pay for rendering when a
+        // PDF is actually requested.
+        const chartImages = []
+        if (format !== 'xlsx') {
+          const chartModule = await loadOptional('chart', './chart.js', '@napi-rs/canvas')
+          await mkdir(engine.exportsDir, { recursive: true })
+          const chartPath = path.join(engine.exportsDir, `${fileStamp()}-${index + 1}-${fileSlug(sectionTitle, 40)}.png`)
+          const rendered = await chartModule.renderChart(
+            {
+              type: chartType,
+              rows: objects,
+              x: xName,
+              y: yList,
+              series: chartSpec.series ? String(chartSpec.series) : null,
+              // The PDF draws the section heading above the image already; a second
+              // title inside the chart would duplicate it.
+              width: Number(chartSpec.width) || 900,
+              height: Number(chartSpec.height) || 360,
+            },
+            chartPath,
+          )
+          chartCount += 1
+          chartImages.push({ path: rendered.path, width: rendered.width, height: rendered.height })
+        }
+        sheets.push({ ...sheet, kind: 'chart', charts: chartImages })
+        continue
+      }
+
+      sheets.push(sheet)
+    }
+
+    if (sheets.length === 0) throw new Error('no sections produced output; check the SQLs and try again')
+
+    const requested = args.path && String(args.path).trim() !== '' ? path.resolve(String(args.path)) : null
+    const base = requested
+      ? path.join(path.dirname(requested), path.basename(requested, path.extname(requested)))
+      : path.join(engine.exportsDir, `${fileStamp()}-${fileSlug(title, 50)}`)
+    const files = []
+
+    if (format === 'pdf' || format === 'both') {
+      const pdfPath = requested && /\.pdf$/i.test(requested) ? requested : `${base}.pdf`
+      assertAllowedPath(pdfPath, config.allowedRoots)
+      const outcome = await (await loadOptional('pdf', './export-pdf.js', 'pdfkit')).exportPdf({
+        path: pdfPath,
+        title,
+        subtitle,
+        sheets,
+        showSql: false,
+        meta: { source: 'DuckBI', generatedAt: new Date().toISOString() },
+        maxRowsPerSheet: baseCap,
+      })
+      files.push({ format: 'pdf', path: outcome.path, bytes: outcome.bytes, pages: outcome.pages })
+      notes.push(...(outcome.notes ?? []))
+    }
+
+    if (format === 'xlsx' || format === 'both') {
+      const xlsxPath = requested && /\.xlsx$/i.test(requested) ? requested : `${base}.xlsx`
+      assertAllowedPath(xlsxPath, config.allowedRoots)
+      const xlsxSheets = sheets.map((sheet) => {
+        if (sheet.kind === 'kpi') {
+          return {
+            name: sheet.name,
+            title: sheet.title,
+            note: sheet.note,
+            columns: [{ name: '指标' }, { name: '数值', isNumeric: true }, { name: '说明' }],
+            rows: sheet.kpis.map((kpi) => [kpi.label, kpi.value, kpi.hint ?? '']),
+            totalRows: sheet.kpis.length,
+          }
+        }
+        if (sheet.kind === 'text') {
+          return {
+            name: sheet.name,
+            title: sheet.title,
+            note: sheet.note,
+            columns: [{ name: '内容' }],
+            rows: [[sheet.body]],
+            totalRows: 1,
+          }
+        }
+        return {
+          name: sheet.name,
+          title: sheet.title,
+          sql: sheet.sql,
+          note: sheet.note,
+          columns: sheet.columns,
+          rows: sheet.rows,
+          totalRows: sheet.totalRows,
+        }
+      })
+      const outcome = await (await loadOptional('xlsx', './export-xlsx.js', 'exceljs')).exportXlsx({
+        path: xlsxPath,
+        title,
+        subtitle,
+        sheets: xlsxSheets,
+        meta: { source: 'DuckBI', generatedAt: new Date().toISOString() },
+      })
+      files.push({ format: 'xlsx', path: outcome.path, bytes: outcome.bytes, rows: outcome.rowCount })
+      notes.push(...(outcome.notes ?? []))
+    }
+
+    return {
+      format,
+      title,
+      files,
+      sections: sheets.length,
+      rows: totalRows,
+      charts: chartCount,
+      notes: [...new Set(notes)],
+    }
+  }
 }
 
 /**
@@ -607,7 +883,8 @@ async function describeTable(engine, schema, table, rowCount = -1) {
   // `approx_count_distinct` is cheap but overshoots badly on narrow tables (it read
   // 1,802 distinct order ids out of 1,466 rows on a demo set), so small and medium
   // tables get the exact answer and only genuinely large ones fall back to HLL.
-  const exact = !Number.isFinite(rowCount) || rowCount < 0 || rowCount <= 2_000_000
+  // 500k is the point where exact per-column DISTINCT stops being interactive.
+  const exact = !Number.isFinite(rowCount) || rowCount < 0 || rowCount <= 500_000
   const projection = []
   shape.columns.forEach((column, index) => {
     const quoted = quoteIdent(column.name)

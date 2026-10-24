@@ -255,6 +255,8 @@ async function main() {
           num(row.DiscountPct),
         ]),
         totalRows: scorecard.length,
+        // The report exporter embeds chart images directly into the PDF.
+        charts: [{ path: chartRegion, width: 940, height: 420 }],
       },
       {
         name: '同期增长',
@@ -274,6 +276,7 @@ async function main() {
           num(row['2025H1']),
         ]),
         totalRows: growth.length,
+        charts: [{ path: chartTrend, width: 940, height: 420 }],
       },
       {
         name: '区域x产品',

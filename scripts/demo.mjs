@@ -4,9 +4,9 @@
  * harness tool pipeline to produce the artifacts a user would actually look at.
  *
  * Outputs land in `samples/`:
- *   revenue-by-region.png, monthly-trend.png, level-share.png   bar / line / donut charts
- *   sales-report.xlsx                                          styled workbook
- *   sales-report.pdf                                           A4 landscape report
+ *   chart-revenue-by-region.png, chart-monthly-trend.png, chart-log-levels.png   bar / line / donut charts
+ *   sales-report.xlsx / .pdf                                  single-result exports
+ *   regional-report.pdf / .xlsx                               rich KPI + table + chart + text report
  *   monthly-summary.csv                                        streamed CSV
  *   console.txt                                                the rendered chat text
  *
@@ -245,6 +245,48 @@ async function main() {
     path: path.join(SAMPLES, 'monthly-summary.csv'),
   })
 
+  const rich = await run('Rich report: KPI cards + tables + charts + narrative', 'duckbi_export', {
+    format: 'both',
+    path: path.join(SAMPLES, 'regional-report'),
+    title: '区域经营周报',
+    subtitle: '2024 全年 · DuckBI 演示数据',
+    sections: [
+      {
+        kind: 'kpi',
+        title: '核心指标',
+        sql: `SELECT '订单数' AS label, count(*) AS value, '全年' AS hint FROM src_sales.orders
+              UNION ALL SELECT '销售额', round(sum(amount), 0), '元' FROM src_sales.orders
+              UNION ALL SELECT '客单价', round(avg(amount), 0), '元' FROM src_sales.orders
+              UNION ALL SELECT '覆盖区域', count(DISTINCT region), '个' FROM src_sales.orders`,
+      },
+      {
+        kind: 'table',
+        title: '区域 × 渠道明细',
+        sql: reportSql,
+        note: '金额单位：元；渠道占比按区域内部计算。',
+      },
+      {
+        kind: 'chart',
+        title: '区域销售额排名',
+        sql: 'SELECT region, round(sum(amount), 0) AS revenue FROM src_sales.orders GROUP BY 1 ORDER BY 2 DESC',
+        chart: { type: 'bar', x: 'region', y: ['revenue'] },
+      },
+      {
+        kind: 'chart',
+        title: '各渠道月度走势',
+        sql: 'SELECT month, channel, round(sum(amount), 0) AS revenue FROM src_sales.orders GROUP BY 1, 2 ORDER BY 1',
+        chart: { type: 'line', x: 'month', y: ['revenue'], series: 'channel' },
+      },
+      {
+        kind: 'text',
+        title: '结论与建议',
+        body:
+          '华东与华南贡献了主要销售额，直营渠道在全年保持领先；建议把代理渠道的旺季资源向华南倾斜，' +
+          '并对客单价偏低的区域做组合销售。',
+      },
+    ],
+  })
+
   await run('Scan summary', 'duckbi_source', { action: 'refresh', name: 'sales' })
 
   // Charts are written into the warehouse's exports folder by the tool itself;
@@ -264,6 +306,7 @@ async function main() {
   for (const [name] of chartCopies) console.log(`  chart : ${path.join(SAMPLES, name)}`)
   console.log(`  xlsx  : ${xlsx.path} (${xlsx.bytes} bytes, ${xlsx.rows} rows)`)
   console.log(`  pdf   : ${pdf.path} (${pdf.bytes} bytes, ${pdf.pages} pages)`)
+  console.log(`  rich  : ${rich.files.map((file) => `${file.path} (${file.bytes} bytes)`).join(', ')}`)
   console.log(`  csv   : ${csv.path} (${csv.rows} rows)`)
   console.log(`  chat  : ${path.join(SAMPLES, 'console.txt')}`)
   console.log(`\nScan summary written for source "${scan.source}" (${scan.schema}).`)

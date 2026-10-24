@@ -399,12 +399,196 @@ function drawTable(doc, fonts, columns, widths, indices, rows) {
   return y;
 }
 
-/* ---------------------------------------------------------------- sheet block */
+/* ------------------------------------------------------ report section blocks */
 
-function drawSheet(doc, fonts, sheet, startY, spec, notes) {
+/** Format a KPI value without inventing precision that is not there. */
+function kpiValue(value) {
+  if (value === null || value === undefined) return '–';
+  if (typeof value === 'number' && Number.isFinite(value)) return formatNumber(value);
+  const text = String(value);
+  const numeric = text.trim() === '' ? null : Number(text);
+  return numeric !== null && Number.isFinite(numeric) ? formatNumber(numeric) : oneLine(text);
+}
+
+/**
+ * Draw one KPI card row block. Cards wrap into rows of 2–4 depending on width.
+ * @param {PDFDocument} doc - document.
+ * @param {object} fonts - registered font names.
+ * @param {object} sheet - KPI section (`kpis: [{label, value, hint}]`).
+ * @param {number} startY - first free y.
+ * @param {string[]} notes - collector for caveats.
+ * @returns {number} y below the block.
+ */
+function drawKpiSection(doc, fonts, sheet, startY, notes) {
   const left = doc.page.margins.left;
   const width = contentWidth(doc);
   let y = startY;
+
+  if (y + 80 > pageBottom(doc)) {
+    doc.addPage();
+    y = doc.page.margins.top;
+  }
+
+  const heading = oneLine(String(sheet.title || sheet.name || 'Key metrics'));
+  doc.font(fonts.bold).fontSize(12).fillColor(COLORS.ink);
+  doc.text(fitText(doc, heading, width), left, y, { lineBreak: false });
+  y += 17;
+
+  if (sheet.note) {
+    doc.font(fonts.body).fontSize(8).fillColor(COLORS.muted);
+    doc.text(fitText(doc, oneLine(String(sheet.note)), width), left, y, { lineBreak: false });
+    y += 12;
+  }
+
+  const kpis = Array.isArray(sheet.kpis) ? sheet.kpis.slice(0, 8) : [];
+  if (kpis.length === 0) {
+    notes.push(`section "${sheet.name}": no KPI values to draw`);
+    return y + 10;
+  }
+
+  const gap = 10;
+  const perRow = width >= 620 ? 4 : width >= 420 ? 3 : 2;
+  const cardWidth = (width - gap * (perRow - 1)) / perRow;
+  const cardHeight = 58;
+
+  for (let index = 0; index < kpis.length; index += perRow) {
+    if (y + cardHeight > pageBottom(doc)) {
+      doc.addPage();
+      y = doc.page.margins.top;
+    }
+    const row = kpis.slice(index, index + perRow);
+    row.forEach((kpi, column) => {
+      const x = left + column * (cardWidth + gap);
+      doc.save();
+      doc.roundedRect(x, y, cardWidth, cardHeight, 5).fill(COLORS.zebra);
+      doc.restore();
+
+      doc.font(fonts.body).fontSize(8).fillColor(COLORS.muted);
+      doc.text(fitText(doc, oneLine(String(kpi.label ?? '')), cardWidth - 16), x + 8, y + 8, { lineBreak: false });
+
+      doc.font(fonts.bold).fontSize(17).fillColor(COLORS.ink);
+      doc.text(fitText(doc, kpiValue(kpi.value), cardWidth - 16), x + 8, y + 21, { lineBreak: false });
+
+      if (kpi.hint) {
+        doc.font(fonts.body).fontSize(7.5).fillColor(COLORS.muted);
+        doc.text(fitText(doc, oneLine(String(kpi.hint)), cardWidth - 16), x + 8, y + 43, { lineBreak: false });
+      }
+    });
+    y += cardHeight + gap;
+  }
+
+  doc.fillColor(COLORS.ink);
+  return y + 4;
+}
+
+/**
+ * Draw a heading plus wrapped narrative text.
+ * @param {PDFDocument} doc - document.
+ * @param {object} fonts - registered font names.
+ * @param {object} sheet - text section (`body`).
+ * @param {number} startY - first free y.
+ * @returns {number} y below the paragraph.
+ */
+function drawTextSection(doc, fonts, sheet, startY) {
+  const left = doc.page.margins.left;
+  const width = contentWidth(doc);
+  let y = startY;
+
+  if (y + 60 > pageBottom(doc)) {
+    doc.addPage();
+    y = doc.page.margins.top;
+  }
+
+  const heading = oneLine(String(sheet.title || sheet.name || 'Notes'));
+  doc.font(fonts.bold).fontSize(12).fillColor(COLORS.ink);
+  doc.text(fitText(doc, heading, width), left, y, { lineBreak: false });
+  y += 17;
+
+  const body = oneLine(String(sheet.body ?? '')).trim();
+  doc.font(fonts.body).fontSize(9.5).fillColor(COLORS.ink);
+  doc.text(body || '—', left, y, { width, lineGap: 3.5 });
+  doc.fillColor(COLORS.ink);
+  return doc.y + 12;
+}
+
+/**
+ * Measure a chart image at its final draw size inside the content width.
+ * @param {PDFDocument} doc - document.
+ * @param {{path: string}} chart - chart image descriptor.
+ * @param {number} maxWidth - available content width.
+ * @returns {{image: object, width: number, height: number} | null} draw geometry, or null.
+ */
+function measureChart(doc, chart, maxWidth) {
+  try {
+    const image = doc.openImage(chart.path);
+    const maxHeight = 300;
+    const scale = Math.min(maxWidth / image.width, maxHeight / image.height);
+    return { image, width: Math.max(1, image.width * scale), height: Math.max(1, image.height * scale) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Draw chart images attached to a section, scaled to the content width.
+ * @param {PDFDocument} doc - document.
+ * @param {object} fonts - registered font names.
+ * @param {object} sheet - section with `charts: [{path,width,height}]`.
+ * @param {number} startY - first free y.
+ * @param {string[]} notes - collector for caveats.
+ * @returns {number} y below the last image.
+ */
+function drawCharts(doc, fonts, sheet, startY, notes) {
+  const left = doc.page.margins.left;
+  const width = contentWidth(doc);
+  let y = startY;
+  const charts = Array.isArray(sheet.charts) ? sheet.charts : [];
+
+  for (const chart of charts) {
+    const dims = measureChart(doc, chart, width);
+    if (!dims) {
+      notes.push(`section "${sheet.name}": chart image could not be embedded`);
+      continue;
+    }
+
+    if (y + dims.height + 8 > pageBottom(doc)) {
+      doc.addPage();
+      y = doc.page.margins.top;
+    }
+    const x = left + (width - dims.width) / 2;
+    doc.image(dims.image, x, y, { width: dims.width, height: dims.height });
+    y += dims.height + 8;
+  }
+
+  return y;
+}
+
+/* ---------------------------------------------------------------- sheet block */
+
+function drawSheet(doc, fonts, sheet, startY, spec, notes) {
+  const kind = String(sheet.kind ?? 'table');
+  if (kind === 'text') return drawTextSection(doc, fonts, sheet, startY);
+  if (kind === 'kpi') return drawKpiSection(doc, fonts, sheet, startY, notes);
+
+  const left = doc.page.margins.left;
+  const width = contentWidth(doc);
+  let y = startY;
+
+  // A chart heading must stay with its image: if only the heading fits, start a
+  // fresh page rather than leaving an orphan sentence above a page break.
+  if (kind === 'chart') {
+    const charts = Array.isArray(sheet.charts) ? sheet.charts : [];
+    let firstHeight = 0;
+    if (charts.length > 0) {
+      const dims = measureChart(doc, charts[0], width);
+      if (dims) firstHeight = dims.height;
+    }
+    const needed = 17 + (sheet.note ? 12 : 0) + (firstHeight > 0 ? firstHeight + 8 : 0);
+    if (y + needed > pageBottom(doc)) {
+      doc.addPage();
+      y = doc.page.margins.top;
+    }
+  }
 
   // Keep the heading with at least a header band + a few rows.
   if (y + 70 > pageBottom(doc)) {
@@ -416,6 +600,20 @@ function drawSheet(doc, fonts, sheet, startY, spec, notes) {
   doc.font(fonts.bold).fontSize(12).fillColor(COLORS.ink);
   doc.text(fitText(doc, heading, width), left, y, { lineBreak: false });
   y += 17;
+
+  if (sheet.note) {
+    doc.font(fonts.body).fontSize(8).fillColor(COLORS.muted);
+    doc.text(fitText(doc, oneLine(String(sheet.note)), width), left, y, { lineBreak: false });
+    y += 12;
+  }
+
+  // A chart section is an image, not a table: the underlying data is already a
+  // separate table section (and the Excel workbook's chart worksheet). Rendering
+  // both here duplicates content and frequently splits the image onto a new page.
+  if (kind === 'chart') {
+    doc.fillColor(COLORS.ink);
+    return drawCharts(doc, fonts, sheet, y, notes) + 12;
+  }
 
   const rawColumns = Array.isArray(sheet.columns) ? sheet.columns : [];
   const allRows = Array.isArray(sheet.rows) ? sheet.rows : [];
@@ -430,7 +628,7 @@ function drawSheet(doc, fonts, sheet, startY, spec, notes) {
   const shownRows = allRows.slice(0, cap);
 
   const details = [`${allRows.length.toLocaleString('en-US')} row(s) · ${columns.length} column(s)`];
-  if (sheet.sql) details.push(`SQL: ${oneLine(String(sheet.sql))}`);
+  if (sheet.sql && spec.showSql !== false) details.push(`SQL: ${oneLine(String(sheet.sql))}`);
   doc.font(fonts.body).fontSize(8).fillColor(COLORS.muted);
   doc.text(fitText(doc, details.join('   '), width), left, y, { lineBreak: false });
   y += 14;
@@ -440,7 +638,8 @@ function drawSheet(doc, fonts, sheet, startY, spec, notes) {
     doc.text('No rows', left, y, { lineBreak: false });
     doc.fillColor(COLORS.ink);
     notes.push(`sheet "${sheet.name}": no rows to render (drew "No rows")`);
-    return y + 22;
+    y += 22;
+    return drawCharts(doc, fonts, sheet, y, notes) + 12;
   }
 
   const widths = measureColumns(doc, fonts, columns, shownRows);
@@ -489,6 +688,8 @@ function drawSheet(doc, fonts, sheet, startY, spec, notes) {
     after += 14;
     notes.push(`sheet "${sheet.name}": ${hidden} row(s) not shown (maxRowsPerSheet ${cap})`);
   }
+
+  after = drawCharts(doc, fonts, sheet, after + 4, notes);
 
   doc.fillColor(COLORS.ink);
   return after + 12;

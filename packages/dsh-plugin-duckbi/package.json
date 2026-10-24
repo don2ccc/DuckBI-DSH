@@ -1,6 +1,6 @@
 {
   "name": "@duckbi/dsh-plugin-duckbi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "DuckBI: point DeepSeek Harness at folders of .log / Excel files and query them with DuckDB through chat, with charts and Excel/PDF export.",
